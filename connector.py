@@ -57,7 +57,11 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                     page.wait_for_timeout(750)
                 if index == 0:
                     stage='reading delivery location'
-                    header = page.locator('header, [role="banner"]').inner_text(timeout=5000)
+                    header_locator = page.locator('header, [role="banner"]')
+                    try:
+                        header = header_locator.first.inner_text(timeout=1500) if header_locator.count() else ''
+                    except BrowserTimeout:
+                        header = ''
                     match = re.search(r'\b\d{5}\b', header)
                     observed_zip = match.group(0) if match else None
                     verified = observed_zip == zip_code
