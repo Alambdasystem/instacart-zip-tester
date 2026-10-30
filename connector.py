@@ -1,6 +1,6 @@
 """Bounded public-browser connector. No private API, login, or challenge bypass."""
 import hashlib, re, time
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, parse_qs
 
 class ConnectorError(Exception):
     def __init__(self, status, message):
@@ -15,14 +15,17 @@ def normalize(cards, query, retailer, observed_zip):
         price = re.search(r'Current price:\s*\$([\d,]+\.\d{2})', text)
         if not name or not price:
             continue
-        key = (name, text)
+        source_path = card.get('url') or ''
+        product_url = 'https://www.instacart.com'+source_path if source_path.startswith('/products/') else None
+        source_store = parse_qs(urlparse(source_path).query).get('retailerSlug', [retailer])[0]
+        key = (name, text, source_store)
         if key in seen:
             continue
         seen.add(key)
         lines = text.splitlines()
         size = next((line.strip() for line in lines if re.fullmatch(r'\d+(?:\.\d+)?\s*(?:x\s*\d+(?:\.\d+)?\s*)?(?:ct|oz|fl oz|gal|lb|g|kg|L|ml|doz|qt)', line.strip(), re.I)), None)
         price_value = float(price.group(1).replace(',', ''))
-        result.append({'id': hashlib.sha256((retailer+'|'+name+'|'+str(size)+'|'+str(price_value)).encode()).hexdigest()[:24], 'name': name, 'size': size, 'price': price_value, 'currency': 'USD', 'retailer': retailer, 'query': query, 'observed_zip': observed_zip, 'source': 'instacart_public_browser', 'url': 'https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query), 'availability': 'Displayed; not independently verified'})
+        result.append({'id': hashlib.sha256((source_store+'|'+name+'|'+str(size)+'|'+str(price_value)).encode()).hexdigest()[:24], 'name': name, 'size': size, 'price': price_value, 'currency': 'USD', 'retailer': source_store, 'query': query, 'observed_zip': observed_zip, 'source': 'instacart_public_browser', 'url': product_url or 'https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query), 'availability': 'Displayed; not independently verified'})
     return result[:20]
 
 def search_browser(zip_code, queries, retailer='', allow_unverified=False):
@@ -87,9 +90,9 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                         raise ConnectorError('login_required', 'Instacart requires an interactive login in this browser.')
                     if not verified:
                         raise ConnectorError('location_required', 'Instacart requires a street address before continuing this search.')
-                cards = page.locator('main [role="group"]').evaluate_all("els => els.filter(e => e.querySelector('h3') && e.innerText.includes('Current price:')).map(e => ({name:e.querySelector('h3').innerText,text:e.innerText}))")
+                cards = page.locator('main [role="group"], [role="main"] [role="group"]').evaluate_all("els => els.filter(e => e.querySelector('h3') && e.innerText.includes('Current price:')).map(e => ({name:e.querySelector('h3').innerText,text:e.innerText,url:e.querySelector('a[data-item-card-button]')?.getAttribute('href')}))")
                 if not cards:
-                    cards = page.locator('main button').evaluate_all("els => els.filter(e => e.querySelector('h3')).map(e => ({name:e.querySelector('h3').innerText,text:e.innerText}))")
+                    cards = page.locator('main [role="button"], [role="main"] [role="button"]').evaluate_all("els => els.filter(e => e.querySelector('h3')).map(e => ({name:e.querySelector('h3').innerText,text:e.innerText,url:e.querySelector('a[data-item-card-button]')?.getAttribute('href')}))")
                 items.extend(normalize(cards, query, retailer, observed_zip))
             if not items:
                 raise ConnectorError('no_results', 'No readable product-and-price cards were returned. This is not proof of no stock.')
