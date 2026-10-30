@@ -40,6 +40,6 @@ class ContractTests(unittest.TestCase):
     def test_docs_routes(self):
         for path in ['/docs','/swagger']:
             body=urlopen(self.url+path).read().decode();self.assertIn('SwaggerUIBundle',body)
-        self.assertIn('Neadz Android',urlopen(self.url+'/android-contract.md').read().decode())
+        self.assertIn('InstaSearch API Contract',urlopen(self.url+'/android-contract.md').read().decode())
 
 if __name__=='__main__':unittest.main()

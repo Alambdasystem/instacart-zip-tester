@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Alambda Grocery API \u2014 Neadz Android Contract",
+    "title": "InstaSearch API Contract",
     "version": "0.2.0",
     "description": "Experimental integration contract. Current provider: Instacart public-browser connector. No authentication on this prototype. Use only test traffic. Cart validation does not update Instacart or place an order. Location and prices must be checked independently. Search snapshots expire within five minutes and can disappear on restart."
   },
@@ -248,7 +248,7 @@
         "tags": [
           "Cart"
         ],
-        "summary": "Validate Neadz cart quantities and prices; no provider checkout",
+        "summary": "Validate app cart quantities and prices; no provider checkout",
         "responses": {
           "200": {
             "description": "Success",

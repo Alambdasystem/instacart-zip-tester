@@ -63,8 +63,8 @@ The connector attempts the visible ZIP selector when possible. If a street addre
 
 Product responses now carry `image_url` when a supported HTTPS Instacart/CDN image is present. The catalog retains the URL with the product. The UI loads thumbnails lazily, uses no referrer, and shows an unavailable-image label for missing or failed images. Worker browsers skip image downloads to save resources while still capturing the image URL from rendered markup.
 
-## Neadz Android contract v0.2
+## InstaSearch API Contract v0.2
 
 Interactive Swagger UI is served at `/docs` and `/swagger`. `/openapi.json` defines reusable request/response models and examples. `/android-contract.md` explains the Android integration sequence, nullable images, location verification, cache expiry, errors, retry policy and prototype boundaries. Swagger UI assets are pinned to 5.17.14 and loaded from unpkg.
 
-Run contract checks with `pip install jsonschema openapi-spec-validator`, then `CATALOG_PATH=/tmp/neadz-tests.sqlite python -m unittest test_api test_cache test_ingestion test_contract -v`. Use an isolated catalog path so local stale records cannot affect fixtures.
+Run contract checks with `pip install jsonschema openapi-spec-validator`, then `CATALOG_PATH=/tmp/instasearch-tests.sqlite python -m unittest test_api test_cache test_ingestion test_contract -v`. Use an isolated catalog path so local stale records cannot affect fixtures.

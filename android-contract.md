@@ -1,4 +1,4 @@
-# Neadz Android grocery integration contract v0.2.0
+# InstaSearch API Contract v0.2.0
 
 Base URL: https://alambda-grocery-api.onrender.com/
 Interactive documentation: /docs
@@ -51,6 +51,6 @@ This is an unauthenticated prototype; don't embed an invented API key or send cu
 
 Both cart_updated and provider_cart_updated remain false. No Instacart basket mutation, ordering, payment, or delivery promise is provided.
 
-## To mirror Neadz exactly
+## To mirror your app exactly
 
 Provide the Android repository/branch and its current product/search/cart DTOs (or one sample request and response). Also identify the existing networking and image-loading libraries. That lets us supply a compiling adapter with exact field mappings instead of assuming Kotlin, React Native, or Capacitor.

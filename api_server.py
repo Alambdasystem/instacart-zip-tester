@@ -61,8 +61,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200,payload)
         if self.path=='/health': return self.send(200,{'status':'ok','version':'0.2.0'})
         if self.path=='/openapi.json': return self.send(200,SPEC)
-        if route.path in ('/docs','/swagger','/android-contract.md'):
-            filename='android-contract.md' if route.path=='/android-contract.md' else 'swagger.html'
+        if route.path in ('/docs','/swagger','/android-contract.md','/instasearch-contract.md'):
+            filename='android-contract.md' if route.path in ('/android-contract.md','/instasearch-contract.md') else 'swagger.html'
             self.send_response(200); self.send_header('Content-Type','text/markdown; charset=utf-8' if filename.endswith('.md') else 'text/html; charset=utf-8'); self.end_headers(); self.wfile.write((ROOT/filename).read_bytes()); return
         if self.path not in ('/',): return self.send(404,{'error':'not_found'})
         self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Cache-Control','no-store'); self.end_headers(); self.wfile.write((ROOT/'middleware.html').read_bytes())
