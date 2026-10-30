@@ -29,6 +29,16 @@ SPEC['paths']['/api/v1/cache/invalidate']={'post':{'summary':'Expire store or re
 
 SPEC['paths']['/api/v1/cart']={'post':{'summary':'Validate our app cart against recent searches','requestBody':{'required':True,'content':{'application/json':{'schema':{'type':'object','required':['lines'],'properties':{'lines':{'type':'array','maxItems':60,'items':{'type':'object','required':['search_id','item_id','quantity'],'properties':{'search_id':{'type':'string'},'item_id':{'type':'string'},'quantity':{'type':'integer','minimum':1,'maximum':99}}}}}}}}},'responses':{'200':{'description':'Validated local cart; provider cart unchanged'},'409':{'description':'Search prices expired; refresh required'},'422':{'description':'Invalid item or quantity'}}}}
 
+def merge_parts(parts, hit_queries, fetched_queries):
+    payloads=[p for p,m in parts];metas=[m for p,m in parts]
+    products={item['id']:item for payload in payloads for item in payload['items']}
+    observed={p['location'].get('observed_zip') for p in payloads}
+    location=dict(payloads[0]['location'])
+    location['verified']=all(p['location']['verified'] for p in payloads)
+    location['observed_zip']=observed.pop() if len(observed)==1 else None
+    meta={'hit':not fetched_queries,'partial_hit':bool(hit_queries and fetched_queries),'hit_queries':hit_queries,'fetched_queries':fetched_queries,'age_seconds':max(m['age_seconds'] for m in metas),'expires_in':min(m['expires_in'] for m in metas),'ttl_seconds':300}
+    return {'items':list(products.values()),'location':location,'warnings':list(dict.fromkeys(w for p in payloads for w in p.get('warnings',[]))),'retrieved_at':min(p.get('retrieved_at','') for p in payloads)},meta
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
     def send(self,code,data):
@@ -94,20 +104,31 @@ class Handler(BaseHTTPRequestHandler):
             client=hashlib.sha256(self.client_address[0].encode()).hexdigest()
             RATE[client]=[t for t in RATE.get(client,[]) if now-t<60]
             if len(RATE[client])>=3: return self.send(429,{'error':'rate_limited','message':'Limit: three searches per minute.'})
-            cache_key=CACHE.key(z,qs,store,flag)
-            cached=CACHE.get(cache_key)
-            if cached:
-                payload,meta=cached
+            parts=[];missing=[];hit_queries=[]
+            for q in qs:
+                entry=CACHE.get(CACHE.key(z,[q],store,flag))
+                if entry: parts.append(entry);hit_queries.append(q)
+                else: missing.append(q)
+            if not missing:
+                payload,meta=merge_parts(parts,hit_queries,[])
                 sid=str(uuid.uuid4());payload.update({'search_id':sid,'cache':meta,'expires_in':meta['expires_in'],'cart_updated':False,'status':'ok'})
                 RESULTS[sid]={'created':now,'expires':now+meta['expires_in'],'payload':payload}
                 return self.send(200,payload)
             if not LOCK.acquire(blocking=False): return self.send(429,{'error':'busy','message':'One browser search is running. Retry shortly.'})
             RATE[client].append(now)
             try:
-                payload=search_browser(z,qs,store,flag)
-                payload['retrieved_at']=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
-                meta=CACHE.put(cache_key,payload)
-                search_id=str(uuid.uuid4()); payload.update({'search_id':search_id,'status':'ok','retrieved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'expires_in':meta['expires_in'],'cache':meta,'cart_updated':False})
+                fresh=search_browser(z,missing,store,flag)
+                parts=[entry for q in hit_queries if (entry:=CACHE.get(CACHE.key(z,[q],store,flag))) is not None]
+                fresh['retrieved_at']=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
+                for q in missing:
+                    normalized=' '.join(q.casefold().split())
+                    subset={**fresh,'items':[i for i in fresh['items'] if ' '.join(i.get('query','').casefold().split())==normalized]}
+                    if subset['items']:
+                        meta=CACHE.put(CACHE.key(z,[q],store,flag),subset)
+                        parts.append((subset,meta))
+                if not parts: raise ConnectorError('no_results','No priced products were returned.')
+                payload,meta=merge_parts(parts,hit_queries,missing)
+                search_id=str(uuid.uuid4());payload.update({'search_id':search_id,'status':'ok','expires_in':meta['expires_in'],'cache':meta,'cart_updated':False})
                 RESULTS[search_id]={'created':now,'expires':time.time()+meta['expires_in'],'payload':payload}
                 return self.send(200,payload)
             except ConnectorError as e:

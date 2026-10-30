@@ -63,6 +63,15 @@ class MiddlewareTests(unittest.TestCase):
             self.assertNotIn(first['search_id'],api.RESULTS)
             self.post('/api/v1/search',{'zip':'63129','query':'milk','retailer':'aldi'})
             self.assertEqual(provider.call_count,2)
+    def test_changed_list_only_fetches_missing_query(self):
+        def provider(z,queries,store,flag):
+            items=[normalize([{'name':q,'text':'Current price: $1.00\n1 ct'}],q,store,z)[0] for q in queries]
+            return {'items':items,'location':{'requested_zip':z,'observed_zip':z,'verified':True},'warnings':[]}
+        with patch.dict(os.environ,{'CONNECTOR_ENABLED':'true'}),patch.object(api,'search_browser',side_effect=provider) as fetch:
+            self.post('/api/v1/search',{'zip':'63129','query':'milk','retailer':'aldi'})
+            status,data=self.post('/api/v1/search',{'zip':'63129','queries':['milk','eggs'],'retailer':'aldi'})
+            self.assertEqual(status,200);self.assertEqual(fetch.call_args.args[1],['eggs'])
+            self.assertTrue(data['cache']['partial_hit']);self.assertEqual(len(data['items']),2)
     def test_spec_serves(self):
         spec=json.load(urlopen(self.url+'/openapi.json'))
         self.assertIn('/api/v1/search',spec['paths'])
