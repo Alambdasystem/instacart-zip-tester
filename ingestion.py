@@ -1,9 +1,9 @@
 """Bounded warm-catalog loop for a single free test instance."""
-import hashlib, json, os, sqlite3, threading, time, resource, shutil
+import hashlib, json, os, sqlite3, threading, time, resource, shutil, re
 from pathlib import Path
 from connector import ConnectorError
 
-SEEDS = ['milk','eggs','bread','chicken','bananas','rice','cheese','coffee']
+SEEDS = ['milk','eggs','bread','chicken','bananas','rice','cheese','coffee','apples','potatoes','pasta','yogurt']
 
 class Catalog:
     def __init__(self,path):
@@ -56,20 +56,33 @@ class Ingestor:
     def __init__(self,catalog,cache,browser_lock,fetch,queries=None,zip_code='63129',retailer='',clock=time.time):
         self.catalog,self.cache,self.browser_lock,self.fetch=catalog,cache,browser_lock,fetch
         self.zip,self.retailer,self.clock=zip_code,retailer,clock
-        self.jobs=[{'query':q,'next_due':0,'successes':0,'failures':0,'last_status':'queued','last_success':None} for q in (queries or SEEDS)[:20]]
+        self.jobs=[{'query':q,'zip':zip_code,'retailer':retailer,'requests':0,'next_due':0,'successes':0,'failures':0,'last_status':'queued','last_success':None} for q in (queries or SEEDS)[:20]]
         self.mutex=threading.RLock();self.stop=threading.Event();self.pause_reason=None;self.active=None;self.attempts=[];self.last_error=None
-    def enqueue(self,query,due=None):
+    def enqueue(self,query,due=None,zip_code=None,retailer=None):
         query=' '.join(query.casefold().split())[:120]
-        if not query:return False
+        z=zip_code or self.zip;store=self.retailer if retailer is None else retailer
+        if not query or not re.fullmatch(r'\d{5}',z) or store not in ('','aldi'):return False
         with self.mutex:
-            if any(j['query'].casefold()==query for j in self.jobs):return True
-            if len(self.jobs)>=20:return False
-            self.jobs.append({'query':query,'next_due':self.clock() if due is None else due,'successes':0,'failures':0,'last_status':'queued','last_success':None})
+            for job in self.jobs:
+                if (job['zip'],job['retailer'],job['query'].casefold())==(z,store,query):
+                    job['requests']+=1;return True
+            zips={j['zip'] for j in self.jobs}
+            if z not in zips and len(zips)>=5:return False
+            if len(self.jobs)>=60:return False
+            if sum(1 for j in self.jobs if (j['zip'],j['retailer'])==(z,store))>=20:return False
+            self.jobs.append({'query':query,'zip':z,'retailer':store,'requests':1,'next_due':self.clock() if due is None else due,'successes':0,'failures':0,'last_status':'queued','last_success':None})
             return True
+    def observe(self,zip_code,queries,retailer=''):
+        with self.mutex:
+            new_zip=not any(j['zip']==zip_code for j in self.jobs)
+            accepted=[q for q in queries if self.enqueue(q,zip_code=zip_code,retailer=retailer)]
+            if new_zip and accepted:
+                for term in SEEDS[:3]:self.enqueue(term,zip_code=zip_code,retailer=retailer)
+            return {'accepted_queries':accepted,'rejected_queries':[q for q in queries if q not in accepted],'zip':zip_code,'retailer':retailer,'limits':{'zip_codes':5,'jobs':60,'queries_per_zip_retailer':20}}
     def status(self):
         with self.mutex:
             now=self.clock()
-            return {'enabled':True,'running':not self.stop.is_set() and self.pause_reason is None,'paused_reason':self.pause_reason,'active_query':self.active,'zip':self.zip,'retailer':self.retailer or 'provider default','location_verified':False,'seed_type':'curated starter terms plus requested queries; not measured retailer popularity','queue':[dict(j,refresh_in_seconds=max(0,int(j['next_due']-now))) for j in self.jobs],'last_error':self.last_error,'attempts_last_hour':len([t for t in self.attempts if now-t<3600]),'hourly_budget':120,'storage':'local SQLite; ephemeral on this free instance','resources':{'python_peak_rss_mb':round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024,1),'finished_children_peak_rss_mb':round(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss/1024,1),'catalog_bytes':Path(self.catalog.path).stat().st_size,'free_disk_mb':round(shutil.disk_usage(Path(self.catalog.path).parent).free/1048576)},'catalog':self.catalog.counts()}
+            return {'enabled':True,'running':not self.stop.is_set() and self.pause_reason is None,'paused_reason':self.pause_reason,'active_query':self.active,'zip':self.zip,'retailer':self.retailer or 'provider default','location_verified':False,'seed_type':'curated starter terms plus requested queries; not measured retailer popularity','footprint':{'zip_codes':sorted({j['zip'] for j in self.jobs}),'zip_count':len({j['zip'] for j in self.jobs}),'unique_queries':len({j['query'] for j in self.jobs}),'jobs':len(self.jobs),'max_zip_codes':5,'max_jobs':60,'max_queries_per_zip_retailer':20},'queue':[dict(j,refresh_in_seconds=max(0,int(j['next_due']-now))) for j in self.jobs],'last_error':self.last_error,'attempts_last_hour':len([t for t in self.attempts if now-t<3600]),'hourly_budget':120,'storage':'local SQLite; ephemeral on this free instance','resources':{'python_peak_rss_mb':round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024,1),'finished_children_peak_rss_mb':round(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss/1024,1),'catalog_bytes':Path(self.catalog.path).stat().st_size,'free_disk_mb':round(shutil.disk_usage(Path(self.catalog.path).parent).free/1048576)},'catalog':self.catalog.counts()}
     def tick(self):
         now=self.clock()
         with self.mutex:
@@ -78,14 +91,14 @@ class Ingestor:
             if len(self.attempts)>=120:return False
             due=[j for j in self.jobs if j['next_due']<=now]
             if not due:return False
-            job=min(due,key=lambda j:(j['next_due'],j['successes']))
+            job=min(due,key=lambda j:(j['last_success'] or 0,-j['requests'],j['next_due']))
         if not self.browser_lock.acquire(blocking=False):return False
         try:
-            with self.mutex:self.active=job['query'];self.attempts.append(now);job['last_status']='fetching'
-            payload=self.fetch(self.zip,[job['query']],self.retailer,True)
+            with self.mutex:self.active=job['zip']+' / '+job['query'];self.attempts.append(now);job['last_status']='fetching'
+            payload=self.fetch(job['zip'],[job['query']],job['retailer'],True)
             stamp=self.clock();payload['retrieved_at']=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(stamp))
-            meta=self.cache.put(self.cache.key(self.zip,[job['query']],self.retailer,True),payload)
-            self.catalog.ingest(self.zip,job['query'],payload,meta['expires_in'],now=stamp)
+            meta=self.cache.put(self.cache.key(job['zip'],[job['query']],job['retailer'],True),payload)
+            self.catalog.ingest(job['zip'],job['query'],payload,meta['expires_in'],now=stamp)
             with self.mutex:
                 job.update({'next_due':stamp+240,'successes':job['successes']+1,'failures':0,'last_status':'ready','last_success':stamp});self.last_error=None
             return True

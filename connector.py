@@ -24,8 +24,11 @@ def normalize(cards, query, retailer, observed_zip):
         seen.add(key)
         lines = text.splitlines()
         size = next((line.strip() for line in lines if re.fullmatch(r'\d+(?:\.\d+)?\s*(?:x\s*\d+(?:\.\d+)?\s*)?(?:ct|oz|fl oz|gal|lb|g|kg|L|ml|doz|qt)', line.strip(), re.I)), None)
+        image_url=card.get('image_url')
+        parsed_image=urlparse(image_url or '')
+        if parsed_image.scheme!='https' or not (parsed_image.hostname and (parsed_image.hostname.endswith('.instacart.com') or parsed_image.hostname.endswith('.cloudfront.net') or parsed_image.hostname=='instacart.com')):image_url=None
         price_value = float(price.group(1).replace(',', ''))
-        result.append({'id': hashlib.sha256((source_store+'|'+name+'|'+str(size)+'|'+str(price_value)).encode()).hexdigest()[:24], 'name': name, 'size': size, 'price': price_value, 'currency': 'USD', 'retailer': source_store, 'query': query, 'observed_zip': observed_zip, 'source': 'instacart_public_browser', 'url': product_url or 'https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query), 'availability': 'Displayed; not independently verified'})
+        result.append({'id': hashlib.sha256((source_store+'|'+name+'|'+str(size)+'|'+str(price_value)).encode()).hexdigest()[:24], 'name': name, 'size': size, 'price': price_value, 'currency': 'USD', 'retailer': source_store, 'query': query, 'observed_zip': observed_zip, 'source': 'instacart_public_browser', 'image_url':image_url, 'url': product_url or 'https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query), 'availability': 'Displayed; not independently verified'})
     return result[:20]
 
 def search_browser(zip_code, queries, retailer='', allow_unverified=False):
@@ -68,9 +71,10 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                     match = re.search(r'\b\d{5}\b', header)
                     observed_zip = match.group(0) if match else None
                     verified = observed_zip == zip_code
-                    if not verified and not allow_unverified:
+                    if not verified:
                         # Only interact with the visible address selector; ZIP-only may require a street address.
-                        controls = page.get_by_role('button').filter(has_text=re.compile(r'^\d{5}$'))
+                        controls = page.get_by_role('button',name=re.compile(r'^current address:',re.I))
+                        if not controls.count():controls=page.get_by_role('button').filter(has_text=re.compile(r'^\d{5}$'))
                         if controls.count() and not page.get_by_role('dialog').count():
                             controls.first.click()
                             field = page.get_by_role('textbox', name='Enter your address', exact=True)
@@ -82,10 +86,18 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                                     option.first.click()
                                 except BrowserTimeout:
                                     pass
-                                header = page.locator('header, [role="banner"]').inner_text(timeout=5000)
+                                try:
+                                    header = page.locator('header, [role="banner"]').first.inner_text(timeout=1500)
+                                except BrowserTimeout:
+                                    header = ''
                                 match = re.search(r'\b\d{5}\b', header)
                                 observed_zip = match.group(0) if match else observed_zip
                                 verified = observed_zip == zip_code
+                        if not verified and allow_unverified:
+                            address_dialog=page.get_by_role('dialog',name='Choose address',exact=True)
+                            if address_dialog.count():
+                                close=address_dialog.get_by_role('button',name='Close',exact=True)
+                                if close.count():close.click()
                         if not verified and not allow_unverified:
                             raise ConnectorError('location_required', 'ZIP alone could not establish the requested delivery location. Supply an authorized provider session in a future connector, or explicitly allow unverified-location results.')
                         if not verified:
@@ -102,9 +114,9 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                         raise ConnectorError('login_required', 'Instacart requires an interactive login in this browser.')
                     if not verified:
                         raise ConnectorError('location_required', 'Instacart requires a street address before continuing this search.')
-                cards = page.locator('main [role="group"], [role="main"] [role="group"]').evaluate_all("els => els.filter(e => e.querySelector('h3') && e.innerText.includes('Current price:')).map(e => ({name:e.querySelector('h3').innerText,text:e.innerText,url:e.querySelector('a[data-item-card-button]')?.getAttribute('href')}))")
+                cards = page.locator('main [role="group"], [role="main"] [role="group"]').evaluate_all("els => els.filter(e => e.querySelector('h3') && e.innerText.includes('Current price:')).map(e => ({name:e.querySelector('h3').innerText,text:e.innerText,image_url:e.querySelector('img')?.currentSrc||e.querySelector('img')?.getAttribute('src'),url:e.querySelector('a[data-item-card-button]')?.getAttribute('href')}))")
                 if not cards:
-                    cards = page.locator('main [role="button"], [role="main"] [role="button"]').evaluate_all("els => els.filter(e => e.querySelector('h3')).map(e => ({name:e.querySelector('h3').innerText,text:e.innerText,url:e.querySelector('a[data-item-card-button]')?.getAttribute('href')}))")
+                    cards = page.locator('main [role="button"], [role="main"] [role="button"]').evaluate_all("els => els.filter(e => e.querySelector('h3')).map(e => ({name:e.querySelector('h3').innerText,text:e.innerText,image_url:e.querySelector('img')?.currentSrc||e.querySelector('img')?.getAttribute('src'),url:e.querySelector('a[data-item-card-button]')?.getAttribute('href')}))")
                 items.extend(normalize(cards, query, retailer, observed_zip))
             if not items:
                 raise ConnectorError('no_results', 'No readable product-and-price cards were returned. This is not proof of no stock.')

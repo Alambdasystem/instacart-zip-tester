@@ -56,14 +56,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200,INGESTOR.status() if INGESTOR else {'enabled':False,'catalog':CATALOG.counts()})
         if route.path in ('/api/v1/catalog','/api/v1/catalog/export'):
             params=parse_qs(route.query);q=[x[:120] for x in params.get('queries',params.get('query',['']))[:3]];z=params.get('zip',[None])[0];retailer=params.get('retailer',[None])[0];allow=params.get('allow_unverified_location',['false'])[0]=='true'
-            if INGESTOR and route.path=='/api/v1/catalog' and z==INGESTOR.zip and (not retailer or retailer==INGESTOR.retailer):
-                for term in q:INGESTOR.enqueue(term)
+            discovery=INGESTOR.observe(z,q,retailer or '') if INGESTOR and route.path=='/api/v1/catalog' and z else None
             items=CATALOG.search(q,z,retailer,limit=5000 if route.path.endswith('/export') else 100)
             for i in items:i['selectable']=i['price_fresh'] and (i.get('location_verified',False) or allow)
             fresh=[i for i in items if i['selectable']]
             location={'requested_zip':z,'observed_zip':None,'verified':bool(fresh) and all(i.get('location_verified') for i in fresh)}
             sid=str(uuid.uuid4())
-            payload={'search_id':sid,'status':'catalog','items':items,'location':location,'catalog':CATALOG.counts(),'cache':{'hit':True,'age_seconds':max([i['age_seconds'] for i in items],default=0),'expires_in':min([i['price_expires_in'] for i in fresh],default=0)},'warnings':['Stored catalog; inspect price_fresh. Requested ZIP is not a verified store location.']}
+            payload={'search_id':sid,'status':'catalog','discovery':discovery,'items':items,'location':location,'catalog':CATALOG.counts(),'cache':{'hit':True,'age_seconds':max([i['age_seconds'] for i in items],default=0),'expires_in':min([i['price_expires_in'] for i in fresh],default=0)},'warnings':['Stored catalog; inspect price_fresh. Requested ZIP is not a verified store location.']}
             if fresh:
                 RESULTS[sid]={'created':time.time(),'expires':time.time()+min(i['price_expires_in'] for i in fresh),'payload':{**payload,'items':fresh}}
             return self.send(200,payload)
@@ -123,6 +122,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200,{'selection_id':str(uuid.uuid4()),'items':selected,'subtotal':round(sum(p['price'] for p in selected),2),'currency':'USD','cart_updated':False,'location':result['payload']['location'],'message':'Selection only. Provider cart is unchanged.'})
             if self.path!='/api/v1/search': return self.send(404,{'error':'not_found'})
             z,qs,store,flag=validate(data)
+            if INGESTOR:INGESTOR.observe(z,qs,store)
             if os.getenv('CONNECTOR_ENABLED','false').lower()!='true': return self.send(503,{'error':'connector_disabled','message':'Browser connector is not enabled on this instance.','items':[]})
             if len(RATE)>1000: RATE.clear()
             client=hashlib.sha256(self.client_address[0].encode()).hexdigest()
@@ -150,7 +150,7 @@ class Handler(BaseHTTPRequestHandler):
                     if subset['items']:
                         meta=CACHE.put(CACHE.key(z,[q],store,flag),subset)
                         CATALOG.ingest(z,q,subset,meta['expires_in'])
-                        if INGESTOR and z==INGESTOR.zip and store==INGESTOR.retailer:INGESTOR.enqueue(q,due=time.time()+240)
+                        if INGESTOR:INGESTOR.enqueue(q,due=time.time()+240,zip_code=z,retailer=store)
                         parts.append((subset,meta))
                 if not parts: raise ConnectorError('no_results','No priced products were returned.')
                 payload,meta=merge_parts(parts,hit_queries,missing)

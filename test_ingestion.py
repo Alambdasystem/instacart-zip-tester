@@ -46,6 +46,19 @@ class IngestionTests(unittest.TestCase):
         self.worker.enqueue('yogurt');self.assertEqual(len(self.worker.jobs),3)
         for n in range(30):self.worker.enqueue('query '+str(n))
         self.assertEqual(len(self.worker.jobs),20)
+    def test_zip_jobs_deduplicate_and_respect_footprint_limit(self):
+        self.worker.observe('63101',[' Chicken ','chicken'])
+        matches=[j for j in self.worker.jobs if j['zip']=='63101' and j['query']=='chicken']
+        self.assertEqual(len(matches),1);self.assertEqual(matches[0]['requests'],2)
+        self.assertTrue(any(j['zip']=='63101' and j['query']=='milk' for j in self.worker.jobs))
+        for z in ['63102','63103','63104','63105']:self.worker.observe(z,['rice'])
+        self.assertEqual(self.worker.status()['footprint']['zip_count'],5)
+        self.assertFalse(any(j['zip']=='63105' for j in self.worker.jobs))
+    def test_worker_fetches_new_job_location(self):
+        self.worker.observe('63101',['Chicken'])
+        self.worker.tick()
+        self.assertEqual(self.fetch.call_args.args[0],'63101')
+        self.assertEqual(self.fetch.call_args.args[1],['chicken'])
     def test_store_invalidation_expires_catalog_prices(self):
         self.catalog.ingest('63129','milk',self.payload,300,now=1000)
         self.assertEqual(self.catalog.invalidate('aldi','63129'),1)

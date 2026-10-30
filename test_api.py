@@ -72,6 +72,11 @@ class MiddlewareTests(unittest.TestCase):
             status,data=self.post('/api/v1/search',{'zip':'63129','queries':['milk','eggs'],'retailer':'aldi'})
             self.assertEqual(status,200);self.assertEqual(fetch.call_args.args[1],['eggs'])
             self.assertTrue(data['cache']['partial_hit']);self.assertEqual(len(data['items']),2)
+    def test_image_url_validation(self):
+        card={'name':'Milk','text':'Current price: $2.78\n1 gal','image_url':'https://www.instacart.com/image-server/milk.jpg'}
+        self.assertEqual(normalize([card],'milk','aldi',None)[0]['image_url'],card['image_url'])
+        card['image_url']='javascript:alert(1)'
+        self.assertIsNone(normalize([card],'milk','aldi',None)[0]['image_url'])
     def test_spec_serves(self):
         spec=json.load(urlopen(self.url+'/openapi.json'))
         self.assertIn('/api/v1/search',spec['paths'])
