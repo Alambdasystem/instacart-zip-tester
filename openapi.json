@@ -1,0 +1,1052 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Alambda Grocery API \u2014 Neadz Android Contract",
+    "version": "0.2.0",
+    "description": "Experimental integration contract. Current provider: Instacart public-browser connector. No authentication on this prototype. Use only test traffic. Cart validation does not update Instacart or place an order. Location and prices must be checked independently. Search snapshots expire within five minutes and can disappear on restart."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "This instance"
+    },
+    {
+      "url": "https://alambda-grocery-api.onrender.com",
+      "description": "Hosted tester"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Products"
+    },
+    {
+      "name": "Cart"
+    },
+    {
+      "name": "Operations"
+    },
+    {
+      "name": "Service"
+    }
+  ],
+  "paths": {
+    "/api/v1/search": {
+      "post": {
+        "operationId": "searchProducts",
+        "tags": [
+          "Products"
+        ],
+        "summary": "Search live products or reuse five-minute cache",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or location_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Busy or rate limited; back off",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Provider failure; inspect status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Connector disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              },
+              "example": {
+                "zip": "63129",
+                "queries": [
+                  "milk",
+                  "eggs"
+                ],
+                "retailer": "",
+                "allow_unverified_location": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/catalog": {
+      "get": {
+        "operationId": "searchCatalog",
+        "tags": [
+          "Products"
+        ],
+        "summary": "Search previously ingested products without a live provider call",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "zip",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]{5}$",
+              "example": "63129"
+            },
+            "description": "Requested ZIP partition; does not prove provider location."
+          },
+          {
+            "name": "queries",
+            "in": "query",
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "array",
+              "maxItems": 3,
+              "items": {
+                "type": "string"
+              }
+            },
+            "example": [
+              "milk",
+              "eggs"
+            ],
+            "description": "Repeat queries=milk&queries=eggs. Matches any term."
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Single-term alias; ignored if queries is present."
+          },
+          {
+            "name": "retailer",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional exact retailer filter. Omit for all retailers."
+          },
+          {
+            "name": "allow_unverified_location",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/select": {
+      "post": {
+        "operationId": "selectProducts",
+        "tags": [
+          "Cart"
+        ],
+        "summary": "Validate a selection from an unexpired snapshot",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelectionResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Search snapshot expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or location_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectionRequest"
+              },
+              "example": {
+                "search_id": "COPY_FROM_SEARCH",
+                "item_ids": [
+                  "COPY_PRODUCT_ID"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cart": {
+      "post": {
+        "operationId": "validateCart",
+        "tags": [
+          "Cart"
+        ],
+        "summary": "Validate Neadz cart quantities and prices; no provider checkout",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CartResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Price expired; search again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or location_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CartRequest"
+              },
+              "example": {
+                "lines": [
+                  {
+                    "search_id": "COPY_FROM_SEARCH",
+                    "item_id": "COPY_PRODUCT_ID",
+                    "quantity": 2
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cache/invalidate": {
+      "post": {
+        "operationId": "invalidateCache",
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Expire store prices and related snapshots (60-second cooldown)",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or location_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Busy or rate limited; back off",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvalidateRequest"
+              },
+              "example": {
+                "retailer": "aldi",
+                "zip": "63129"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/catalog/export": {
+      "get": {
+        "operationId": "exportCatalog",
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Export up to 5000 stored observations",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "zip",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]{5}$",
+              "example": "63129"
+            },
+            "description": "Requested ZIP partition; does not prove provider location."
+          },
+          {
+            "name": "queries",
+            "in": "query",
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "array",
+              "maxItems": 3,
+              "items": {
+                "type": "string"
+              }
+            },
+            "example": [
+              "milk",
+              "eggs"
+            ],
+            "description": "Repeat queries=milk&queries=eggs. Matches any term."
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Single-term alias; ignored if queries is present."
+          },
+          {
+            "name": "retailer",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional exact retailer filter. Omit for all retailers."
+          },
+          {
+            "name": "allow_unverified_location",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/ingestion/status": {
+      "get": {
+        "operationId": "getIngestionStatus",
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Read collector queue and resource counters",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestionStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "tags": [
+          "Service"
+        ],
+        "summary": "Check middleware readiness",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Product": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "price": {
+            "type": "number",
+            "description": "Observed USD unit price; excludes taxes and fees. Use decimal arithmetic for totals."
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD"
+            ]
+          },
+          "retailer": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "observed_zip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "image_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Optional HTTPS thumbnail. Display a placeholder if missing or loading fails."
+          },
+          "availability": {
+            "type": "string"
+          },
+          "requested_zip": {
+            "type": "string"
+          },
+          "location_verified": {
+            "type": "boolean"
+          },
+          "price_fresh": {
+            "type": "boolean"
+          },
+          "price_expires_in": {
+            "type": "number"
+          },
+          "age_seconds": {
+            "type": "number"
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "selectable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "size",
+          "price",
+          "currency",
+          "retailer",
+          "query",
+          "source",
+          "url",
+          "image_url",
+          "availability"
+        ]
+      },
+      "Location": {
+        "type": "object",
+        "properties": {
+          "requested_zip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_zip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verified": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "requested_zip",
+          "verified"
+        ]
+      },
+      "Cache": {
+        "type": "object",
+        "properties": {
+          "hit": {
+            "type": "boolean"
+          },
+          "partial_hit": {
+            "type": "boolean"
+          },
+          "hit_queries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fetched_queries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "age_seconds": {
+            "type": "number"
+          },
+          "expires_in": {
+            "type": "number"
+          },
+          "ttl_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "hit",
+          "age_seconds",
+          "expires_in"
+        ]
+      },
+      "SearchRequest": {
+        "type": "object",
+        "properties": {
+          "zip": {
+            "type": "string",
+            "pattern": "^[0-9]{5}$",
+            "example": "63129"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "queries": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          },
+          "retailer": {
+            "type": "string",
+            "enum": [
+              "",
+              "aldi"
+            ],
+            "default": ""
+          },
+          "allow_unverified_location": {
+            "type": "boolean",
+            "default": false,
+            "description": "Explicit consent to non-local demo results; never implies ZIP verification."
+          }
+        },
+        "required": [
+          "zip"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "query"
+            ]
+          },
+          {
+            "required": [
+              "queries"
+            ]
+          }
+        ],
+        "description": "Provide query or queries. If both are present, queries takes precedence."
+      },
+      "SearchResponse": {
+        "type": "object",
+        "properties": {
+          "search_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            }
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "retrieved_at": {
+            "type": "string"
+          },
+          "cache": {
+            "$ref": "#/components/schemas/Cache"
+          },
+          "expires_in": {
+            "type": "number"
+          },
+          "cart_updated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "search_id",
+          "status",
+          "items",
+          "location",
+          "cache",
+          "expires_in",
+          "cart_updated"
+        ]
+      },
+      "CatalogResponse": {
+        "type": "object",
+        "properties": {
+          "search_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "catalog"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            }
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location"
+          },
+          "cache": {
+            "$ref": "#/components/schemas/Cache"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "discovery": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "catalog": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "search_id",
+          "status",
+          "items",
+          "location",
+          "cache",
+          "warnings",
+          "catalog"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            }
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location"
+          }
+        },
+        "required": [],
+        "description": "Error code is error OR status (legacy connector). Android must read error ?? status. Do not treat empty items on non-2xx as success."
+      },
+      "SelectionRequest": {
+        "type": "object",
+        "properties": {
+          "search_id": {
+            "type": "string"
+          },
+          "item_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 60,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "search_id",
+          "item_ids"
+        ]
+      },
+      "SelectionResponse": {
+        "type": "object",
+        "properties": {
+          "selection_id": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            }
+          },
+          "subtotal": {
+            "type": "number"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "cart_updated": {
+            "type": "boolean"
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "selection_id",
+          "items",
+          "subtotal",
+          "currency",
+          "cart_updated",
+          "location",
+          "message"
+        ]
+      },
+      "CartLine": {
+        "type": "object",
+        "properties": {
+          "search_id": {
+            "type": "string"
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 99
+          }
+        },
+        "required": [
+          "search_id",
+          "item_id",
+          "quantity"
+        ]
+      },
+      "CartRequest": {
+        "type": "object",
+        "properties": {
+          "lines": {
+            "type": "array",
+            "maxItems": 60,
+            "items": {
+              "$ref": "#/components/schemas/CartLine"
+            }
+          }
+        },
+        "required": [
+          "lines"
+        ]
+      },
+      "CartProduct": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Product"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "search_id": {
+                "type": "string"
+              },
+              "quantity": {
+                "type": "integer"
+              },
+              "line_total": {
+                "type": "number"
+              },
+              "location_verified": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "search_id",
+              "quantity",
+              "line_total",
+              "location_verified"
+            ]
+          }
+        ]
+      },
+      "CartResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CartProduct"
+            }
+          },
+          "item_count": {
+            "type": "integer"
+          },
+          "subtotal": {
+            "type": "number"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "cart_updated": {
+            "type": "boolean"
+          },
+          "provider_cart_updated": {
+            "type": "boolean"
+          },
+          "location_verified": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "item_count",
+          "subtotal",
+          "currency",
+          "cart_updated",
+          "provider_cart_updated",
+          "location_verified",
+          "message"
+        ]
+      },
+      "InvalidateRequest": {
+        "type": "object",
+        "properties": {
+          "retailer": {
+            "type": "string",
+            "enum": [
+              "aldi",
+              "*"
+            ]
+          },
+          "zip": {
+            "type": "string",
+            "pattern": "^[0-9]{5}$",
+            "example": "63129"
+          }
+        },
+        "required": [
+          "retailer"
+        ]
+      },
+      "InvalidateResponse": {
+        "type": "object",
+        "properties": {
+          "invalidated_searches": {
+            "type": "integer"
+          },
+          "expired_price_sets": {
+            "type": "integer"
+          },
+          "retailer": {
+            "type": "string"
+          },
+          "zip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "invalidated_searches",
+          "expired_price_sets",
+          "retailer",
+          "zip",
+          "message"
+        ]
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "version"
+        ]
+      },
+      "IngestionStatus": {
+        "type": "object",
+        "description": "Operational diagnostic counters. Fields may expand; not an Android commerce model.",
+        "additionalProperties": true
+      }
+    }
+  }
+}

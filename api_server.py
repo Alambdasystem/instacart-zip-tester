@@ -27,14 +27,7 @@ def validate(data):
     if type(flag) is not bool: raise ValueError('allow_unverified_location must be boolean.')
     return z, list(dict.fromkeys(q.strip() for q in qs)), retailer, flag
 
-SPEC = {'openapi':'3.1.0','info':{'title':'Alambda Grocery Middleware','version':'0.1.0','description':'Experimental public-browser search connector. No checkout or cart writes. Location verification is explicit.'},'paths':{'/api/v1/search':{'post':{'summary':'Search food products','requestBody':{'required':True,'content':{'application/json':{'schema':{'type':'object','required':['zip'],'properties':{'zip':{'type':'string','pattern':'^[0-9]{5}$'},'query':{'type':'string'},'queries':{'type':'array','minItems':1,'maxItems':3,'items':{'type':'string'}},'retailer':{'enum':['','aldi']},'allow_unverified_location':{'type':'boolean','default':False}}}}}},'responses':{'200':{'description':'Normalized live browser results; inspect location.verified'},'422':{'description':'Invalid input or delivery location required'},'429':{'description':'Busy or rate limited'},'502':{'description':'Provider blocked, login required, timeout, or unreadable results'}}}},'/api/v1/select':{'post':{'summary':'Select returned product IDs from a recent search','responses':{'200':{'description':'Validated local selection; no cart operation'},'404':{'description':'Search expired'}}}},'/health':{'get':{'responses':{'200':{'description':'Service ready'}}}}}}
-
-SPEC['paths']['/api/v1/cache/invalidate']={'post':{'summary':'Expire store or restaurant cache and associated cart price snapshots','requestBody':{'required':True,'content':{'application/json':{'schema':{'type':'object','required':['retailer'],'properties':{'retailer':{'enum':['aldi','*']},'zip':{'type':'string','pattern':'^[0-9]{5}$'}}}}}},'responses':{'200':{'description':'Cache invalidated'},'429':{'description':'Invalidation cooldown'}}}}
-
-SPEC['paths']['/api/v1/cart']={'post':{'summary':'Validate our app cart against recent searches','requestBody':{'required':True,'content':{'application/json':{'schema':{'type':'object','required':['lines'],'properties':{'lines':{'type':'array','maxItems':60,'items':{'type':'object','required':['search_id','item_id','quantity'],'properties':{'search_id':{'type':'string'},'item_id':{'type':'string'},'quantity':{'type':'integer','minimum':1,'maximum':99}}}}}}}}},'responses':{'200':{'description':'Validated local cart; provider cart unchanged'},'409':{'description':'Search prices expired; refresh required'},'422':{'description':'Invalid item or quantity'}}}}
-
-for path,summary in [('/api/v1/catalog','Search the stored ingested catalog'),('/api/v1/catalog/export','Export ingested catalog'),('/api/v1/ingestion/status','Read ingestion queue and resource counters')]:
-    SPEC['paths'][path]={'get':{'summary':summary,'responses':{'200':{'description':'Catalog or queue snapshot'}}}}
+SPEC = json.loads((ROOT/'openapi.json').read_text())
 
 def merge_parts(parts, hit_queries, fetched_queries):
     payloads=[p for p,m in parts];metas=[m for p,m in parts]
@@ -66,9 +59,12 @@ class Handler(BaseHTTPRequestHandler):
             if fresh:
                 RESULTS[sid]={'created':time.time(),'expires':time.time()+min(i['price_expires_in'] for i in fresh),'payload':{**payload,'items':fresh}}
             return self.send(200,payload)
-        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.1.0'})
+        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.2.0'})
         if self.path=='/openapi.json': return self.send(200,SPEC)
-        if self.path not in ('/','/docs'): return self.send(404,{'error':'not_found'})
+        if route.path in ('/docs','/swagger','/android-contract.md'):
+            filename='android-contract.md' if route.path=='/android-contract.md' else 'swagger.html'
+            self.send_response(200); self.send_header('Content-Type','text/markdown; charset=utf-8' if filename.endswith('.md') else 'text/html; charset=utf-8'); self.end_headers(); self.wfile.write((ROOT/filename).read_bytes()); return
+        if self.path not in ('/',): return self.send(404,{'error':'not_found'})
         self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Cache-Control','no-store'); self.end_headers(); self.wfile.write((ROOT/'middleware.html').read_bytes())
     def do_POST(self):
         try:
