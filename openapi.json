@@ -181,6 +181,18 @@
               "type": "boolean",
               "default": false
             }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "instacart",
+                "mealme_satsuma",
+                "all"
+              ],
+              "default": "instacart"
+            }
           }
         ]
       }
@@ -428,6 +440,18 @@
               "type": "boolean",
               "default": false
             }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "instacart",
+                "mealme_satsuma",
+                "all"
+              ],
+              "default": "instacart"
+            }
           }
         ]
       }
@@ -470,6 +494,102 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/v1/compare": {
+      "post": {
+        "summary": "Compare Instacart and account-enabled MealMe/Satsuma; inspect each provider status",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "zip",
+                  "queries"
+                ],
+                "properties": {
+                  "zip": {
+                    "type": "string",
+                    "pattern": "^[0-9]{5}$"
+                  },
+                  "queries": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "mode": {
+                    "enum": [
+                      "catalog",
+                      "live"
+                    ],
+                    "default": "catalog"
+                  },
+                  "providers": {
+                    "type": "array",
+                    "items": {
+                      "enum": [
+                        "instacart",
+                        "mealme_satsuma"
+                      ]
+                    }
+                  },
+                  "retailer": {
+                    "enum": [
+                      "",
+                      "aldi"
+                    ]
+                  },
+                  "allow_unverified_location": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              },
+              "example": {
+                "zip": "63110",
+                "queries": [
+                  "milk"
+                ],
+                "providers": [
+                  "instacart",
+                  "mealme_satsuma"
+                ],
+                "mode": "catalog",
+                "allow_unverified_location": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Per-provider outcomes; 200 does not imply upstream success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComparisonResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Comparison rate limited"
+          }
+        }
+      }
+    },
+    "/api/v1/providers/status": {
+      "get": {
+        "summary": "Sanitized provider activity and bounded test budget",
+        "responses": {
+          "200": {
+            "description": "No credentials or raw upstream payloads"
           }
         }
       }
@@ -749,7 +869,14 @@
           "items": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Product"
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Product"
+                },
+                {
+                  "$ref": "#/components/schemas/ComparisonItem"
+                }
+              ]
             }
           },
           "location": {
@@ -1046,6 +1173,195 @@
         "type": "object",
         "description": "Operational diagnostic counters. Fields may expand; not an Android commerce model.",
         "additionalProperties": true
+      },
+      "ComparisonItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "provider",
+          "selectable"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "enum": [
+              "instacart",
+              "mealme_satsuma"
+            ]
+          },
+          "price": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "provider_price": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "selectable": {
+            "const": false
+          },
+          "price_unit_verified": {
+            "type": "boolean"
+          },
+          "location_verified": {
+            "type": "boolean"
+          },
+          "provider_product_id": {
+            "type": "string"
+          },
+          "provider_location_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "age_seconds": {
+            "type": "number"
+          },
+          "price_expires_in": {
+            "type": "number"
+          },
+          "price_fresh": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": true
+      },
+      "ProviderComparison": {
+        "type": "object",
+        "required": [
+          "provider",
+          "status",
+          "error",
+          "items",
+          "metrics",
+          "location",
+          "cache_hit",
+          "duration_ms"
+        ],
+        "properties": {
+          "provider": {
+            "enum": [
+              "instacart",
+              "mealme_satsuma"
+            ]
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "empty",
+              "error",
+              "partial",
+              "cached",
+              "not_cached"
+            ]
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "http_status": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ComparisonItem"
+            }
+          },
+          "metrics": {
+            "type": "object"
+          },
+          "location": {
+            "type": "object"
+          },
+          "cache_hit": {
+            "type": "boolean"
+          },
+          "duration_ms": {
+            "type": "integer"
+          }
+        }
+      },
+      "ComparisonResponse": {
+        "type": "object",
+        "required": [
+          "comparison_id",
+          "zip",
+          "queries",
+          "mode",
+          "compared_at",
+          "providers",
+          "note"
+        ],
+        "properties": {
+          "comparison_id": {
+            "type": "string"
+          },
+          "zip": {
+            "type": "string"
+          },
+          "queries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "mode": {
+            "enum": [
+              "live",
+              "catalog"
+            ]
+          },
+          "compared_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderComparison"
+            }
+          },
+          "note": {
+            "type": "string"
+          }
+        }
       }
     }
   }

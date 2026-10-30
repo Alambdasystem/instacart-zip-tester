@@ -68,3 +68,41 @@ Product responses now carry `image_url` when a supported HTTPS Instacart/CDN ima
 Interactive Swagger UI is served at `/docs` and `/swagger`. `/openapi.json` defines reusable request/response models and examples. `/android-contract.md` explains the Android integration sequence, nullable images, location verification, cache expiry, errors, retry policy and prototype boundaries. Swagger UI assets are pinned to 5.17.14 and loaded from unpkg.
 
 Run contract checks with `pip install jsonschema openapi-spec-validator`, then `CATALOG_PATH=/tmp/instasearch-tests.sqlite python -m unittest test_api test_cache test_ingestion test_contract -v`. Use an isolated catalog path so local stale records cannot affect fixtures.
+
+## MealMe / Satsuma comparison (v0.2)
+
+The API tester now compares the existing Instacart browser connector with the
+account-enabled MealMe API at `https://api.satsuma.ai`. This is NOT the legacy
+MealMe v3 contract or the Vercel Kroger/Square proxy.
+
+- `POST /api/v1/compare`: `{"zip":"63110","queries":["milk"],"providers":["instacart","mealme_satsuma"],"mode":"live","allow_unverified_location":true}`.
+  Use `mode: "catalog"` (default) to inspect stored snapshots without provider calls.
+  Each provider has its own status/error, product/image/price-field counts, freshness,
+  and latency. HTTP 200 represents a completed comparison, not success of every source.
+- `GET /api/v1/providers/status`: bounded, sanitized activity and local call accounting.
+- `/api/v1/catalog` and `/api/v1/catalog/export` accept `provider=instacart` (default),
+  `mealme_satsuma`, or `all`. Stored products are namespaced by provider and location.
+- `SATSUMA_API_KEY`: secret configured on Render only; raw `Authorization` header,
+  fixed HTTPS Satsuma destination, redirects disabled, no write/order endpoints.
+- `SATSUMA_READ_BUDGET`: maximum product reads per UTC month in the local database,
+  default 10, capped at 100. The cap is local, NOT the account's authoritative meter;
+  it resets if ephemeral storage is lost. Five-minute cooldown after upstream failures.
+- MealMe is on-demand only while availability remains unresolved; it is NOT added to
+  the continuous Instacart ingestion loop. Successful reads populate a separate
+  five-minute memory cache and the shared SQLite catalog. Errors never become empty
+  successful catalog entries. Existing good records are retained and age normally.
+- ZIP centroids come from the public `https://api.zippopotam.us/us/{zip}` response.
+  They are approximate search coordinates, not verified delivery addresses. No account
+  credential is transmitted to that service. Missing ZIP coordinates are explicit errors.
+- Raw MealMe price fields/currency are retained, but units have not been verified with
+  usable live products. They are not converted into checkout prices or admitted to the
+  app cart. Comparison counts price fields, not matched/equivalent product prices.
+- Existing SQLite rows migrate with provider `instacart`; identities are preserved.
+  The existing free Render service has NO durable disk: cache, history and budget
+  counters can be lost on deployment. No paid storage was provisioned by this change.
+
+Run `python -m unittest -v` (contract tests require `jsonschema` and
+`openapi-spec-validator`). Tests use simulated provider responses; they are not
+proof of live MealMe products. The live portal audit on October 30 returned
+`/merchant` 200 (GoPuff only), `/location` 503 and `/product` 503. Current portal
+billing showed Free and 17/100 used after that three-call audit.

@@ -10,29 +10,35 @@ class Catalog:
         self.path=str(path)
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS products (key TEXT PRIMARY KEY, zip TEXT, retailer TEXT, terms TEXT, seen REAL, expires REAL, payload TEXT)')
+            columns={r[1] for r in db.execute('PRAGMA table_info(products)')}
+            if 'provider' not in columns:db.execute("ALTER TABLE products ADD COLUMN provider TEXT NOT NULL DEFAULT 'instacart'")
+            db.execute('CREATE INDEX IF NOT EXISTS products_provider_zip ON products(provider,zip)')
     def db(self): return sqlite3.connect(self.path,timeout=5)
     def ingest(self,zip_code,query,payload,ttl,now=None):
         now=time.time() if now is None else now
         with self.db() as db:
             for item in payload['items']:
-                identity=(item.get('url','').split('?')[0] or item['name']+'|'+str(item.get('size')))+'|'+item.get('retailer','')+'|'+zip_code
+                provider=item.get('provider',payload.get('provider','instacart'))
+                identity=((item.get('url') or '').split('?')[0] or item['name']+'|'+str(item.get('size')))+'|'+item.get('retailer','')+'|'+zip_code
+                if provider!='instacart':identity=provider+'|'+str(item.get('provider_location_id'))+'|'+item['id']+'|'+zip_code
                 key=hashlib.sha256(identity.encode()).hexdigest()
                 old=db.execute('SELECT terms FROM products WHERE key=?',(key,)).fetchone()
                 terms=set(json.loads(old[0])) if old else set()
                 terms.add(query.casefold())
-                data={**item,'requested_zip':zip_code,'location_verified':payload['location']['verified'],'catalog_key':key}
-                db.execute('INSERT OR REPLACE INTO products VALUES (?,?,?,?,?,?,?)',(key,zip_code,item.get('retailer',''),json.dumps(sorted(terms)),now,now+ttl,json.dumps(data)))
+                data={**item,'provider':provider,'requested_zip':zip_code,'location_verified':payload['location']['verified'],'catalog_key':key}
+                db.execute('INSERT OR REPLACE INTO products (key,zip,retailer,terms,seen,expires,payload,provider) VALUES (?,?,?,?,?,?,?,?)',(key,zip_code,item.get('retailer',''),json.dumps(sorted(terms)),now,now+ttl,json.dumps(data),provider))
             db.execute('DELETE FROM products WHERE key IN (SELECT key FROM products ORDER BY seen DESC LIMIT -1 OFFSET 5000)')
-    def search(self,query='',zip_code=None,retailer=None,limit=100,now=None):
+    def search(self,query='',zip_code=None,retailer=None,limit=100,now=None,provider=None):
         now=time.time() if now is None else now
         where=[];args=[]
+        if provider:where.append('provider=?');args.append(provider)
         if zip_code:where.append('zip=?');args.append(zip_code)
         if retailer:where.append('retailer=?');args.append(retailer)
-        sql='SELECT payload,seen,expires,terms FROM products'+(' WHERE '+' AND '.join(where) if where else '')+' ORDER BY seen DESC LIMIT 5000'
+        sql='SELECT payload,seen,expires,terms,provider FROM products'+(' WHERE '+' AND '.join(where) if where else '')+' ORDER BY seen DESC LIMIT 5000'
         output=[]
         with self.db() as db:
-            for raw,seen,expires,terms in db.execute(sql,args):
-                p=json.loads(raw)
+            for raw,seen,expires,terms,provider_name in db.execute(sql,args):
+                p=json.loads(raw);p['provider']=provider_name
                 queries=query if isinstance(query,list) else [query]
                 if not any(q.casefold() in (p['name']+' '+terms).casefold() for q in queries):continue
                 p.update({'age_seconds':max(0,int(now-seen)),'price_fresh':now<expires,'price_expires_in':max(0,int(expires-now)),'last_seen':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(seen))})
