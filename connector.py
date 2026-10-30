@@ -49,7 +49,10 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                 stage='rendering product cards'
                 deadline = time.monotonic()+25
                 while time.monotonic() < deadline:
-                    text = page.locator('body').inner_text(timeout=5000)
+                    try:
+                        text = page.locator('body').inner_text(timeout=2000)
+                    except BrowserTimeout:
+                        continue
                     if re.search(r'verify you are human|checking your browser|unusual traffic|automated queries|access denied', text, re.I):
                         raise ConnectorError('provider_blocked', 'Instacart is screening this browser. No bypass was attempted.')
                     if 'Current price:' in text or page.get_by_role('dialog').count():

@@ -1,4 +1,6 @@
 import hashlib, json, os, re, threading, time, uuid
+from urllib.parse import urlsplit, parse_qs
+from ingestion import Catalog, Ingestor
 from search_cache import SearchCache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -10,6 +12,8 @@ RESULTS = {}
 RATE = {}
 CACHE = SearchCache(ttl=300)
 INVALIDATIONS = {}
+CATALOG = Catalog(os.getenv('CATALOG_PATH','/tmp/alambda-grocery-catalog.sqlite'))
+INGESTOR = None
 
 def validate(data):
     if not isinstance(data, dict): raise ValueError('Expected a JSON object.')
@@ -29,6 +33,9 @@ SPEC['paths']['/api/v1/cache/invalidate']={'post':{'summary':'Expire store or re
 
 SPEC['paths']['/api/v1/cart']={'post':{'summary':'Validate our app cart against recent searches','requestBody':{'required':True,'content':{'application/json':{'schema':{'type':'object','required':['lines'],'properties':{'lines':{'type':'array','maxItems':60,'items':{'type':'object','required':['search_id','item_id','quantity'],'properties':{'search_id':{'type':'string'},'item_id':{'type':'string'},'quantity':{'type':'integer','minimum':1,'maximum':99}}}}}}}}},'responses':{'200':{'description':'Validated local cart; provider cart unchanged'},'409':{'description':'Search prices expired; refresh required'},'422':{'description':'Invalid item or quantity'}}}}
 
+for path,summary in [('/api/v1/catalog','Search the stored ingested catalog'),('/api/v1/catalog/export','Export ingested catalog'),('/api/v1/ingestion/status','Read ingestion queue and resource counters')]:
+    SPEC['paths'][path]={'get':{'summary':summary,'responses':{'200':{'description':'Catalog or queue snapshot'}}}}
+
 def merge_parts(parts, hit_queries, fetched_queries):
     payloads=[p for p,m in parts];metas=[m for p,m in parts]
     products={item['id']:item for payload in payloads for item in payload['items']}
@@ -44,6 +51,22 @@ class Handler(BaseHTTPRequestHandler):
     def send(self,code,data):
         raw=json.dumps(data).encode(); self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.end_headers(); self.wfile.write(raw)
     def do_GET(self):
+        route=urlsplit(self.path)
+        if route.path=='/api/v1/ingestion/status':
+            return self.send(200,INGESTOR.status() if INGESTOR else {'enabled':False,'catalog':CATALOG.counts()})
+        if route.path in ('/api/v1/catalog','/api/v1/catalog/export'):
+            params=parse_qs(route.query);q=[x[:120] for x in params.get('queries',params.get('query',['']))[:3]];z=params.get('zip',[None])[0];retailer=params.get('retailer',[None])[0];allow=params.get('allow_unverified_location',['false'])[0]=='true'
+            if INGESTOR and route.path=='/api/v1/catalog' and z==INGESTOR.zip and (not retailer or retailer==INGESTOR.retailer):
+                for term in q:INGESTOR.enqueue(term)
+            items=CATALOG.search(q,z,retailer,limit=5000 if route.path.endswith('/export') else 100)
+            for i in items:i['selectable']=i['price_fresh'] and (i.get('location_verified',False) or allow)
+            fresh=[i for i in items if i['selectable']]
+            location={'requested_zip':z,'observed_zip':None,'verified':bool(fresh) and all(i.get('location_verified') for i in fresh)}
+            sid=str(uuid.uuid4())
+            payload={'search_id':sid,'status':'catalog','items':items,'location':location,'catalog':CATALOG.counts(),'cache':{'hit':True,'age_seconds':max([i['age_seconds'] for i in items],default=0),'expires_in':min([i['price_expires_in'] for i in fresh],default=0)},'warnings':['Stored catalog; inspect price_fresh. Requested ZIP is not a verified store location.']}
+            if fresh:
+                RESULTS[sid]={'created':time.time(),'expires':time.time()+min(i['price_expires_in'] for i in fresh),'payload':{**payload,'items':fresh}}
+            return self.send(200,payload)
         if self.path=='/health': return self.send(200,{'status':'ok','version':'0.1.0'})
         if self.path=='/openapi.json': return self.send(200,SPEC)
         if self.path not in ('/','/docs'): return self.send(404,{'error':'not_found'})
@@ -65,6 +88,7 @@ class Handler(BaseHTTPRequestHandler):
                 if now-INVALIDATIONS.get(group,0)<60:return self.send(429,{'error':'rate_limited','message':'Store invalidation is limited to once per minute.'})
                 INVALIDATIONS[group]=now
                 removed=CACHE.invalidate(retailer,z)
+                CATALOG.invalidate(retailer,z)
                 expired=0
                 for sid,result in list(RESULTS.items()):
                     payload=result['payload']
@@ -125,6 +149,8 @@ class Handler(BaseHTTPRequestHandler):
                     subset={**fresh,'items':[i for i in fresh['items'] if ' '.join(i.get('query','').casefold().split())==normalized]}
                     if subset['items']:
                         meta=CACHE.put(CACHE.key(z,[q],store,flag),subset)
+                        CATALOG.ingest(z,q,subset,meta['expires_in'])
+                        if INGESTOR and z==INGESTOR.zip and store==INGESTOR.retailer:INGESTOR.enqueue(q,due=time.time()+240)
                         parts.append((subset,meta))
                 if not parts: raise ConnectorError('no_results','No priced products were returned.')
                 payload,meta=merge_parts(parts,hit_queries,missing)
@@ -138,4 +164,8 @@ class Handler(BaseHTTPRequestHandler):
             finally: LOCK.release()
         except (ValueError,TypeError): return self.send(422,{'error':'invalid_request','message':'Use a five-digit zip and 1–3 food queries. See /openapi.json.'})
 
-if __name__=='__main__': ThreadingHTTPServer(('0.0.0.0',int(os.getenv('PORT','3000'))),Handler).serve_forever()
+if __name__=='__main__':
+    if os.getenv('INGEST_ENABLED','false').lower()=='true':
+        INGESTOR=Ingestor(CATALOG,CACHE,LOCK,search_browser,zip_code=os.getenv('INGEST_ZIP','63129'),retailer=os.getenv('INGEST_RETAILER',''))
+        INGESTOR.start()
+    ThreadingHTTPServer(('0.0.0.0',int(os.getenv('PORT','3000'))),Handler).serve_forever()
