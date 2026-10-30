@@ -54,3 +54,14 @@ Both cart_updated and provider_cart_updated remain false. No Instacart basket mu
 ## To mirror your app exactly
 
 Provide the Android repository/branch and its current product/search/cart DTOs (or one sample request and response). Also identify the existing networking and image-loading libraries. That lets us supply a compiling adapter with exact field mappings instead of assuming Kotlin, React Native, or Capacitor.
+
+## Optional provider-comparison contract
+
+`POST /api/v1/compare` accepts the same ZIP/queries/retailer/location flag plus
+`providers: ["instacart", "mealme_satsuma"]` and `mode: "catalog" | "live"`.
+Inspect `providers[].status` and `providers[].error` separately: one source can
+succeed while another fails. `items` are provider-scoped; never merge on display
+name or reuse IDs across sources. Image URLs are optional. MealMe currently uses
+Satsuma, not the Vercel proxy. Its raw `provider_price` and currency are diagnostic
+until units are verified; `price: null` and `selectable: false` prohibit cart use.
+Comparisons are observational, not a unified provider checkout.

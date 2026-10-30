@@ -37,6 +37,21 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(code,200);self.check(selection,{'$ref':'#/components/schemas/SelectionResponse'})
             code,error=self.post('/api/v1/search',{'zip':'bad','queries':[]})
             self.assertEqual(code,422);self.check(error,{'$ref':'#/components/schemas/Error'})
+    def test_comparison_contract(self):
+        from provider_comparison import Comparison
+        from search_cache import SearchCache
+        import threading
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as folder:
+            catalog=Catalog(folder+'/test.sqlite')
+            comparison=Comparison(catalog,SearchCache(),threading.Lock(),Mock())
+            with patch.object(api,'COMPARISON',comparison):
+                code,data=self.post('/api/v1/compare',{'zip':'63110','queries':['milk'],'mode':'catalog'})
+                self.assertEqual(code,200);self.check(data,{'$ref':'#/components/schemas/ComparisonResponse'})
+                self.assertEqual([p['status'] for p in data['providers']],['not_cached','not_cached'])
+                self.assertEqual(self.post('/api/v1/compare',{'zip':'63110','queries':['milk'],'providers':['other']})[0],422)
+                self.assertEqual(self.post('/api/v1/compare',{'zip':'63110','queries':['milk'],'mode':'write'})[0],422)
+
     def test_docs_routes(self):
         for path in ['/docs','/swagger']:
             body=urlopen(self.url+path).read().decode();self.assertIn('SwaggerUIBundle',body)

@@ -1,6 +1,7 @@
 import hashlib, json, os, re, threading, time, uuid
 from urllib.parse import urlsplit, parse_qs
 from ingestion import Catalog, Ingestor
+from provider_comparison import Comparison
 from search_cache import SearchCache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -14,6 +15,7 @@ CACHE = SearchCache(ttl=300)
 INVALIDATIONS = {}
 CATALOG = Catalog(os.getenv('CATALOG_PATH','/tmp/alambda-grocery-catalog.sqlite'))
 INGESTOR = None
+COMPARISON = Comparison(CATALOG,CACHE,LOCK,lambda *a: search_browser(*a))
 
 def validate(data):
     if not isinstance(data, dict): raise ValueError('Expected a JSON object.')
@@ -45,13 +47,16 @@ class Handler(BaseHTTPRequestHandler):
         raw=json.dumps(data).encode(); self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.end_headers(); self.wfile.write(raw)
     def do_GET(self):
         route=urlsplit(self.path)
+        if route.path=='/api/v1/providers/status':return self.send(200,COMPARISON.status())
         if route.path=='/api/v1/ingestion/status':
             return self.send(200,INGESTOR.status() if INGESTOR else {'enabled':False,'catalog':CATALOG.counts()})
         if route.path in ('/api/v1/catalog','/api/v1/catalog/export'):
             params=parse_qs(route.query);q=[x[:120] for x in params.get('queries',params.get('query',['']))[:3]];z=params.get('zip',[None])[0];retailer=params.get('retailer',[None])[0];allow=params.get('allow_unverified_location',['false'])[0]=='true'
             discovery=INGESTOR.observe(z,q,retailer or '') if INGESTOR and route.path=='/api/v1/catalog' and z else None
-            items=CATALOG.search(q,z,retailer,limit=5000 if route.path.endswith('/export') else 100)
-            for i in items:i['selectable']=i['price_fresh'] and (i.get('location_verified',False) or allow)
+            provider=params.get('provider',['instacart'])[0]
+            if provider not in ('instacart','mealme_satsuma','all'):return self.send(422,{'error':'invalid_provider'})
+            items=CATALOG.search(q,z,retailer,provider=None if provider=='all' else provider,limit=5000 if route.path.endswith('/export') else 100)
+            for i in items:i['selectable']=i.get('provider','instacart')=='instacart' and isinstance(i.get('price'),(int,float)) and i['price_fresh'] and (i.get('location_verified',False) or allow)
             fresh=[i for i in items if i['selectable']]
             location={'requested_zip':z,'observed_zip':None,'verified':bool(fresh) and all(i.get('location_verified') for i in fresh)}
             sid=str(uuid.uuid4())
@@ -76,13 +81,24 @@ class Handler(BaseHTTPRequestHandler):
             while len(RESULTS)>=200: RESULTS.pop(next(iter(RESULTS)))
             for key in list(RESULTS):
                 if now>=RESULTS[key].get('expires',RESULTS[key]['created']+300): RESULTS.pop(key,None)
+            if self.path=='/api/v1/compare':
+                z,qs,store,flag=validate(data)
+                mode=data.get('mode','catalog');providers=data.get('providers',['instacart','mealme_satsuma'])
+                if mode not in ('catalog','live') or not isinstance(providers,list) or not providers or len(providers)>2 or any(p not in ('instacart','mealme_satsuma') for p in providers):raise ValueError('Invalid comparison options.')
+                if mode=='live':
+                    client='compare:'+hashlib.sha256(self.client_address[0].encode()).hexdigest()
+                    if len(RATE)>1000:RATE.clear()
+                    RATE[client]=[t for t in RATE.get(client,[]) if now-t<60]
+                    if len(RATE[client])>=3:return self.send(429,{'error':'rate_limited','message':'Three live comparisons per minute.'})
+                    RATE[client].append(now)
+                return self.send(200,COMPARISON.compare(z,qs,store,flag,mode,list(dict.fromkeys(providers))))
             if self.path=='/api/v1/cache/invalidate':
                 retailer=data.get('retailer');z=data.get('zip')
                 if retailer not in ('aldi','*') or (z is not None and (not isinstance(z,str) or not re.fullmatch(r'\d{5}',z))): raise ValueError('Supply retailer aldi or *, and optional five-digit zip.')
                 group=(retailer,z)
                 if now-INVALIDATIONS.get(group,0)<60:return self.send(429,{'error':'rate_limited','message':'Store invalidation is limited to once per minute.'})
                 INVALIDATIONS[group]=now
-                removed=CACHE.invalidate(retailer,z)
+                removed=CACHE.invalidate(retailer,z)+COMPARISON.scache.invalidate(retailer,z)
                 CATALOG.invalidate(retailer,z)
                 expired=0
                 for sid,result in list(RESULTS.items()):
