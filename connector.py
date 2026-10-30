@@ -39,11 +39,15 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
         context = browser.new_context(locale='en-US')
         page = context.new_page()
         page.set_default_timeout(5000)
+        stage='opening provider search'
+        page.route('**/*', lambda route: route.abort() if route.request.resource_type in ('image','media','font') else route.continue_())
         try:
             for index, query in enumerate(queries):
                 url = 'https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query)
-                page.goto(url, wait_until='domcontentloaded', timeout=25000)
-                deadline = time.monotonic()+15
+                stage='opening provider search'
+                page.goto(url, wait_until='commit', timeout=35000)
+                stage='rendering product cards'
+                deadline = time.monotonic()+25
                 while time.monotonic() < deadline:
                     text = page.locator('body').inner_text(timeout=5000)
                     if re.search(r'verify you are human|checking your browser|unusual traffic|automated queries|access denied', text, re.I):
@@ -52,6 +56,7 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                         break
                     page.wait_for_timeout(750)
                 if index == 0:
+                    stage='reading delivery location'
                     header = page.locator('header, [role="banner"]').inner_text(timeout=5000)
                     match = re.search(r'\b\d{5}\b', header)
                     observed_zip = match.group(0) if match else None
@@ -98,7 +103,7 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                 raise ConnectorError('no_results', 'No readable product-and-price cards were returned. This is not proof of no stock.')
             return {'items': items, 'location': {'requested_zip': zip_code, 'observed_zip': observed_zip, 'verified': verified}, 'warnings': list(dict.fromkeys(warnings))}
         except BrowserTimeout:
-            raise ConnectorError('provider_timeout', 'Instacart did not finish rendering within the connector timeout.')
+            raise ConnectorError('provider_timeout', 'Instacart timed out while '+stage+'.')
         finally:
             context.close()
             browser.close()

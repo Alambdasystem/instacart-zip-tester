@@ -17,7 +17,7 @@ class MiddlewareTests(unittest.TestCase):
         try:r=urlopen(Request(self.url+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json'}))
         except HTTPError as e:r=e
         return r.status,json.load(r)
-    def setUp(self): api.RESULTS.clear();api.RATE.clear()
+    def setUp(self): api.RESULTS.clear();api.RATE.clear();api.CACHE.entries.clear();api.CACHE.groups.clear();api.INVALIDATIONS.clear()
     def test_price_size_normalization(self):
         rows=normalize([{'name':'Milk','text':'Milk\nCurrent price: $2.78\n1 gal'}],'milk','aldi','63129')
         self.assertEqual((rows[0]['price'],rows[0]['size']), (2.78,'1 gal'))
@@ -50,6 +50,19 @@ class MiddlewareTests(unittest.TestCase):
         self.assertEqual(self.post('/api/v1/cart',{'lines':[{**line,'quantity':-1}]})[0],422)
         api.RESULTS.clear()
         self.assertEqual(self.post('/api/v1/cart',{'lines':[line]})[0],409)
+    def test_cached_search_avoids_provider_and_store_invalidation(self):
+        item=normalize([{'name':'Milk','text':'Current price: $2.78\n1 gal'}],'milk','aldi','63129')[0]
+        payload={'items':[item],'location':{'requested_zip':'63129','observed_zip':'63129','verified':True},'warnings':[]}
+        with patch.dict(os.environ,{'CONNECTOR_ENABLED':'true'}),patch.object(api,'search_browser',return_value=payload) as provider:
+            status,first=self.post('/api/v1/search',{'zip':'63129','queries':['milk'],'retailer':'aldi'})
+            status,second=self.post('/api/v1/search',{'zip':'63129','queries':[' MILK '],'retailer':'aldi'})
+            self.assertEqual(provider.call_count,1);self.assertTrue(second['cache']['hit'])
+            self.assertNotEqual(first['search_id'],second['search_id'])
+            status,invalidated=self.post('/api/v1/cache/invalidate',{'zip':'63129','retailer':'aldi'})
+            self.assertEqual(status,200);self.assertEqual(invalidated['invalidated_searches'],1)
+            self.assertNotIn(first['search_id'],api.RESULTS)
+            self.post('/api/v1/search',{'zip':'63129','query':'milk','retailer':'aldi'})
+            self.assertEqual(provider.call_count,2)
     def test_spec_serves(self):
         spec=json.load(urlopen(self.url+'/openapi.json'))
         self.assertIn('/api/v1/search',spec['paths'])

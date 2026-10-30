@@ -1,4 +1,5 @@
 import hashlib, json, os, re, threading, time, uuid
+from search_cache import SearchCache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from connector import ConnectorError, search_browser
@@ -7,6 +8,8 @@ ROOT = Path(__file__).parent
 LOCK = threading.Lock()
 RESULTS = {}
 RATE = {}
+CACHE = SearchCache(ttl=300)
+INVALIDATIONS = {}
 
 def validate(data):
     if not isinstance(data, dict): raise ValueError('Expected a JSON object.')
@@ -21,6 +24,8 @@ def validate(data):
     return z, list(dict.fromkeys(q.strip() for q in qs)), retailer, flag
 
 SPEC = {'openapi':'3.1.0','info':{'title':'Alambda Grocery Middleware','version':'0.1.0','description':'Experimental public-browser search connector. No checkout or cart writes. Location verification is explicit.'},'paths':{'/api/v1/search':{'post':{'summary':'Search food products','requestBody':{'required':True,'content':{'application/json':{'schema':{'type':'object','required':['zip'],'properties':{'zip':{'type':'string','pattern':'^[0-9]{5}$'},'query':{'type':'string'},'queries':{'type':'array','minItems':1,'maxItems':3,'items':{'type':'string'}},'retailer':{'enum':['','aldi']},'allow_unverified_location':{'type':'boolean','default':False}}}}}},'responses':{'200':{'description':'Normalized live browser results; inspect location.verified'},'422':{'description':'Invalid input or delivery location required'},'429':{'description':'Busy or rate limited'},'502':{'description':'Provider blocked, login required, timeout, or unreadable results'}}}},'/api/v1/select':{'post':{'summary':'Select returned product IDs from a recent search','responses':{'200':{'description':'Validated local selection; no cart operation'},'404':{'description':'Search expired'}}}},'/health':{'get':{'responses':{'200':{'description':'Service ready'}}}}}}
+
+SPEC['paths']['/api/v1/cache/invalidate']={'post':{'summary':'Expire store or restaurant cache and associated cart price snapshots','requestBody':{'required':True,'content':{'application/json':{'schema':{'type':'object','required':['retailer'],'properties':{'retailer':{'enum':['aldi','*']},'zip':{'type':'string','pattern':'^[0-9]{5}$'}}}}}},'responses':{'200':{'description':'Cache invalidated'},'429':{'description':'Invalidation cooldown'}}}}
 
 SPEC['paths']['/api/v1/cart']={'post':{'summary':'Validate our app cart against recent searches','requestBody':{'required':True,'content':{'application/json':{'schema':{'type':'object','required':['lines'],'properties':{'lines':{'type':'array','maxItems':60,'items':{'type':'object','required':['search_id','item_id','quantity'],'properties':{'search_id':{'type':'string'},'item_id':{'type':'string'},'quantity':{'type':'integer','minimum':1,'maximum':99}}}}}}}}},'responses':{'200':{'description':'Validated local cart; provider cart unchanged'},'409':{'description':'Search prices expired; refresh required'},'422':{'description':'Invalid item or quantity'}}}}
 
@@ -40,8 +45,22 @@ class Handler(BaseHTTPRequestHandler):
             data=json.loads(self.rfile.read(size))
             if not isinstance(data,dict): raise ValueError('Expected a JSON object.')
             now=time.time()
+            while len(RESULTS)>=200: RESULTS.pop(next(iter(RESULTS)))
             for key in list(RESULTS):
-                if now-RESULTS[key]['created']>300: RESULTS.pop(key,None)
+                if now>=RESULTS[key].get('expires',RESULTS[key]['created']+300): RESULTS.pop(key,None)
+            if self.path=='/api/v1/cache/invalidate':
+                retailer=data.get('retailer');z=data.get('zip')
+                if retailer not in ('aldi','*') or (z is not None and (not isinstance(z,str) or not re.fullmatch(r'\d{5}',z))): raise ValueError('Supply retailer aldi or *, and optional five-digit zip.')
+                group=(retailer,z)
+                if now-INVALIDATIONS.get(group,0)<60:return self.send(429,{'error':'rate_limited','message':'Store invalidation is limited to once per minute.'})
+                INVALIDATIONS[group]=now
+                removed=CACHE.invalidate(retailer,z)
+                expired=0
+                for sid,result in list(RESULTS.items()):
+                    payload=result['payload']
+                    if (z is None or payload['location']['requested_zip']==z) and (retailer=='*' or any(p.get('retailer')==retailer for p in payload['items'])):
+                        RESULTS.pop(sid,None);expired+=1
+                return self.send(200,{'invalidated_searches':removed,'expired_price_sets':expired,'retailer':retailer,'zip':z,'message':'Next matching search will fetch fresh provider results.'})
             if self.path=='/api/v1/cart':
                 lines=data.get('lines',[])
                 if not isinstance(lines,list) or len(lines)>60: raise ValueError('Cart supports up to 60 lines.')
@@ -75,12 +94,21 @@ class Handler(BaseHTTPRequestHandler):
             client=hashlib.sha256(self.client_address[0].encode()).hexdigest()
             RATE[client]=[t for t in RATE.get(client,[]) if now-t<60]
             if len(RATE[client])>=3: return self.send(429,{'error':'rate_limited','message':'Limit: three searches per minute.'})
+            cache_key=CACHE.key(z,qs,store,flag)
+            cached=CACHE.get(cache_key)
+            if cached:
+                payload,meta=cached
+                sid=str(uuid.uuid4());payload.update({'search_id':sid,'cache':meta,'expires_in':meta['expires_in'],'cart_updated':False,'status':'ok'})
+                RESULTS[sid]={'created':now,'expires':now+meta['expires_in'],'payload':payload}
+                return self.send(200,payload)
             if not LOCK.acquire(blocking=False): return self.send(429,{'error':'busy','message':'One browser search is running. Retry shortly.'})
             RATE[client].append(now)
             try:
                 payload=search_browser(z,qs,store,flag)
-                search_id=str(uuid.uuid4()); payload.update({'search_id':search_id,'status':'ok','retrieved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'expires_in':300,'cart_updated':False})
-                RESULTS[search_id]={'created':now,'payload':payload}
+                payload['retrieved_at']=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
+                meta=CACHE.put(cache_key,payload)
+                search_id=str(uuid.uuid4()); payload.update({'search_id':search_id,'status':'ok','retrieved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'expires_in':meta['expires_in'],'cache':meta,'cart_updated':False})
+                RESULTS[search_id]={'created':now,'expires':time.time()+meta['expires_in'],'payload':payload}
                 return self.send(200,payload)
             except ConnectorError as e:
                 return self.send(422 if e.status=='location_required' else 502,{'status':e.status,'message':e.message,'items':[],'location':{'requested_zip':z,'verified':False}})
