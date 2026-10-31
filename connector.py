@@ -107,31 +107,39 @@ def establish_location(page, requested_zip, allow_unverified):
     if requested.get('coordinates'):raise ConnectorError('location_unsupported','Instacart browser requires an address; GPS-only selection is not supported by this connector.')
     address_selected=False
     opened_picker=False
+    address_stage='opening_picker';address_failure=None
     if (observed!=requested_zip or address) and control.count() and not page.get_by_role('dialog').count():
         field=page.get_by_role('textbox',name='Enter your address',exact=True)
         try:
             control.first.click(timeout=3000)
             opened_picker=True
-            field.wait_for(state='visible',timeout=4000)
+            address_stage='address_input'
+            field.wait_for(state='visible',timeout=8000)
             search_text=(', '.join([address['line1'],address['city'],address['region'],requested_zip]) if address else requested_zip)
             field.fill(search_text)
             address_tokens=street_tokens(address['line1']) if address else []
             suggestion_pattern=r'^'+r'\s+'.join(map(re.escape,address_tokens)) if address else '^'+requested_zip+r'\b'
             option=page.get_by_role('button',name=re.compile(suggestion_pattern,re.I))
-            option.first.wait_for(state='visible',timeout=5000)
+            address_stage='address_suggestion'
+            option.first.wait_for(state='visible',timeout=15000)
             suggestion_text=option.first.inner_text(timeout=2000) if address else ''
             option.first.click()
             if address:
                 save=page.get_by_role('button',name=re.compile(r'^Save address$',re.I))
+                address_stage='save_address_form'
+                save.first.wait_for(state='visible',timeout=12000)
                 if save.count():
+                    address_stage='save_address_enabled'
                     save_deadline=time.monotonic()+12
                     while not save.first.is_enabled() and time.monotonic()<save_deadline:page.wait_for_timeout(400)
                     if save.first.is_enabled():
+                        address_stage='save_address_acknowledgment'
                         save.first.click(timeout=4000)
                         dialog=page.get_by_role('dialog')
                         if dialog.count():dialog.first.wait_for(state='hidden',timeout=12000)
                 # Selection requires provider acknowledgment, never simply a successful click.
                 address_selected=not page.get_by_role('dialog').count()
+                address_stage='active_address_control'
                 active=(control.first.get_attribute('aria-label',timeout=1200) or control.first.inner_text(timeout=1200) or '').casefold()
                 tokens=street_tokens(address['line1'])
                 address_selected=address_selected and street_tokens(active)[:len(tokens)]==tokens and bool(re.search(r'\b'+requested_zip+r'\b',suggestion_text))
@@ -142,10 +150,10 @@ def establish_location(page, requested_zip, allow_unverified):
                 observed=observed_location(page)
                 if observed==requested_zip:break
                 page.wait_for_timeout(400)
-        except Exception:pass
+        except Exception as e:address_failure=type(e).__name__
     observed=observed_location(page)
     verified=observed==requested_zip and (not address or address_selected)
-    if address and not address_selected:raise ConnectorError('location_required','Provider did not acknowledge the submitted address. Complete the address or authorized session setup.')
+    if address and not address_selected:raise ConnectorError('location_required','Provider did not acknowledge the submitted address at '+address_stage+('. '+address_failure if address_failure else '')+'. Complete the address or authorized session setup.')
     if not verified and not allow_unverified:
         raise ConnectorError('location_required','Instacart did not confirm the requested ZIP in its active address control. A delivery address or authorized session may be required.')
     if not verified:
