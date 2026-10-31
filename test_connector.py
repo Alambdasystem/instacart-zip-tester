@@ -65,7 +65,7 @@ class ConnectorTests(unittest.TestCase):
         self.assertTrue(settled);self.assertEqual(len(state['cards']),14)
     def test_preserves_actual_different_zip(self):
         page=Mock();page.locator.return_value.inner_text.return_value='';control=Mock();control.count.return_value=1;control.first.get_attribute.return_value='current address: 67570. Or select a new address.'
-        page.get_by_role.side_effect=lambda role,**kw:control if role=='button' else Mock(count=Mock(return_value=1))
+        page.get_by_role.side_effect=lambda role,**kw:control if role=='button' else Mock(count=Mock(return_value=1),first=Mock(inner_text=Mock(return_value='Choose address')))
         self.assertEqual(establish_location(page,'63129',True),('67570',False))
     def test_retailer_slugs_safe_and_not_aldi_only(self):
         self.assertEqual(validate({'zip':'63129','query':'milk','retailer':'costco'})[2],'costco')

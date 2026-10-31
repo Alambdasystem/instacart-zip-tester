@@ -81,10 +81,12 @@ def establish_location(page, requested_zip, allow_unverified):
     try:control.first.wait_for(state='visible',timeout=10000)
     except Exception:pass
     observed=observed_location(page)
+    opened_picker=False
     if observed!=requested_zip and control.count() and not page.get_by_role('dialog').count():
         field=page.get_by_role('textbox',name='Enter your address',exact=True)
         try:
             control.first.click(timeout=3000)
+            opened_picker=True
             field.wait_for(state='visible',timeout=4000)
             field.fill(requested_zip)
             option=page.get_by_role('button',name=re.compile('^'+requested_zip+r'\b'))
@@ -102,12 +104,22 @@ def establish_location(page, requested_zip, allow_unverified):
     if not verified and not allow_unverified:
         raise ConnectorError('location_required','Instacart did not confirm the requested ZIP in its active address control. A delivery address or authorized session may be required.')
     if not verified:
-        dialog=page.get_by_role('dialog',name='Choose address',exact=True)
-        if dialog.count():
-            close=dialog.get_by_role('button',name='Close',exact=True)
-            if close.count():
-                try:close.click(timeout=3000)
-                except Exception:pass
+        # ZIP suggestions may change the dialog title. Only dismiss an optional
+        # address picker with its visible close control; never a sign-in wall.
+        dialogs=page.get_by_role('dialog')
+        if dialogs.count():
+            dialog=dialogs.first
+            try:text=dialog.inner_text(timeout=2000)
+            except Exception:text=''
+            if re.search(r'Enter your email|Log in|Continue with',text,re.I):
+                raise ConnectorError('login_required','Instacart requires interactive login.')
+            if opened_picker or re.search(r'address|delivery|location',text,re.I):
+                close=dialog.get_by_role('button',name=re.compile(r'^close(?:\b|$)',re.I))
+                if close.count():
+                    try:
+                        close.first.click(timeout=5000)
+                        dialog.wait_for(state='hidden',timeout=5000)
+                    except Exception:pass
     return observed,verified
 
 
@@ -122,7 +134,9 @@ def wait_for_catalog(page, retailer='', timeout=22, clock=time.monotonic):
             raise ConnectorError('provider_blocked','Instacart is screening this browser. No bypass was attempted.')
         dialogs=page.get_by_role('dialog')
         if dialogs.count():
-            text=dialogs.first.inner_text(timeout=2500)
+            try:text=dialogs.first.inner_text(timeout=2500)
+            except Exception:
+                page.wait_for_timeout(750);continue
             if re.search(r'Enter your email|Log in|Continue with',text,re.I):
                 raise ConnectorError('login_required','Instacart requires interactive login.')
             raise ConnectorError('location_required','Instacart has an active address form. Confirm location before searching.')
