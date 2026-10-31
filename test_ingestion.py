@@ -1,7 +1,7 @@
 import tempfile, threading, unittest
 from pathlib import Path
 from unittest.mock import Mock
-from ingestion import Catalog, Ingestor
+from ingestion import Catalog, Ingestor, SEEDS, MAX_QUERIES_PER_ZIP
 from connector import ConnectorError
 from search_cache import SearchCache
 
@@ -30,7 +30,7 @@ class IngestionTests(unittest.TestCase):
         self.assertTrue(self.worker.tick());self.assertEqual(self.fetch.call_args.args[1],['milk'])
         self.assertTrue(self.worker.tick());self.assertEqual(self.fetch.call_args.args[1],['eggs'])
         self.assertFalse(self.worker.tick())
-        self.now+=241;self.assertTrue(self.worker.tick())
+        self.now+=21601;self.assertTrue(self.worker.tick())
         self.assertEqual(self.worker.jobs[0]['successes'],2)
     def test_failure_backoff_and_screening_pause(self):
         self.fetch.side_effect=ConnectorError('provider_timeout','slow')
@@ -44,8 +44,8 @@ class IngestionTests(unittest.TestCase):
     def test_requested_queries_join_bounded_queue(self):
         self.assertTrue(self.worker.enqueue(' Yogurt '));self.assertEqual(self.worker.jobs[-1]['query'],'yogurt')
         self.worker.enqueue('yogurt');self.assertEqual(len(self.worker.jobs),3)
-        for n in range(30):self.worker.enqueue('query '+str(n))
-        self.assertEqual(len(self.worker.jobs),20)
+        for n in range(MAX_QUERIES_PER_ZIP + 5):self.worker.enqueue('query '+str(n))
+        self.assertEqual(len(self.worker.jobs),MAX_QUERIES_PER_ZIP)
     def test_zip_jobs_deduplicate_and_respect_footprint_limit(self):
         self.worker.observe('63101',[' Chicken ','chicken'])
         matches=[j for j in self.worker.jobs if j['zip']=='63101' and j['query']=='chicken']
@@ -54,11 +54,45 @@ class IngestionTests(unittest.TestCase):
         for z in ['63102','63103','63104','63105']:self.worker.observe(z,['rice'])
         self.assertEqual(self.worker.status()['footprint']['zip_count'],5)
         self.assertFalse(any(j['zip']=='63105' for j in self.worker.jobs))
+    def test_expanded_list_and_new_zip_have_full_food_coverage(self):
+        self.assertGreater(len(SEEDS),350)
+        self.assertEqual(len(SEEDS),len(set(SEEDS)))
+        self.assertIn("mcdonald's",SEEDS)
+        self.worker.observe('63017',['spinach'])
+        terms={j['query'] for j in self.worker.jobs if j['zip']=='63017'}
+        self.assertTrue(set(SEEDS).issubset(terms))
+
     def test_worker_fetches_new_job_location(self):
         self.worker.observe('63101',['Chicken'])
         self.worker.tick()
         self.assertEqual(self.fetch.call_args.args[0],'63101')
         self.assertEqual(self.fetch.call_args.args[1],['chicken'])
+    def test_queue_and_budget_survive_restart(self):
+        self.worker.observe('63017',['sushi'])
+        self.worker.tick()
+        restored=Ingestor(self.catalog,self.cache,self.lock,self.fetch,clock=lambda:self.now)
+        self.assertEqual(restored.jobs,self.worker.jobs)
+        self.assertEqual(restored.attempts,self.worker.attempts)
+    def test_hot_jobs_do_not_starve_discovery(self):
+        self.worker.enqueue('sushi')
+        self.worker.enqueue('pizza')
+        choices=[self.worker.choose_job(self.worker.jobs) for _ in range(5)]
+        self.assertTrue(any(self.worker.tier(j)=='discovery' for j in choices))
+        self.assertTrue(any(self.worker.tier(j)=='hot' for j in choices))
+    def test_location_mismatch_is_not_verified(self):
+        self.payload['location']={'verified':True,'observed_zip':'30043'}
+        self.catalog.ingest('63129','milk',self.payload,300,now=self.now)
+        row=self.catalog.search('milk',now=self.now)[0]
+        self.assertFalse(row['location_verified'])
+        self.assertEqual(row['observed_zip'],'30043')
+        self.assertEqual(self.catalog.counts()['verified_zip_codes'],[])
+    def test_native_backup_restores_products_and_queue(self):
+        self.worker.enqueue('sushi')
+        target=Path(self.temp.name)/'backup.sqlite'
+        self.catalog.backup(target)
+        backup=Catalog(target)
+        self.assertEqual(backup.load_state(self.worker.state_key)['jobs'],self.worker.jobs)
+
     def test_store_invalidation_expires_catalog_prices(self):
         self.catalog.ingest('63129','milk',self.payload,300,now=1000)
         self.assertEqual(self.catalog.invalidate('aldi','63129'),1)

@@ -13,7 +13,7 @@ RESULTS = {}
 RATE = {}
 CACHE = SearchCache(ttl=300)
 INVALIDATIONS = {}
-CATALOG = Catalog(os.getenv('CATALOG_PATH','/tmp/alambda-grocery-catalog.sqlite'))
+CATALOG = Catalog(os.getenv('CATALOG_PATH',str(Path(os.getenv('RENDER_DISK_MOUNT_PATH','/tmp'))/'alambda-grocery-catalog.sqlite')))
 INGESTOR = None
 COMPARISON = Comparison(CATALOG,CACHE,LOCK,lambda *a: search_browser(*a))
 
@@ -125,6 +125,10 @@ class Handler(BaseHTTPRequestHandler):
                     item=next((i for i in result['payload']['items'] if i['id']==item_id),None)
                     if not item: raise ValueError('Unknown item.')
                     selected.append({**item,'search_id':sid,'quantity':qty,'line_total':round(item['price']*qty,2),'location_verified':result['payload']['location']['verified']})
+                if INGESTOR:
+                    for item in selected:
+                        location=RESULTS.get(item['search_id'])['payload'].get('location',{})
+                        if location.get('requested_zip') and item.get('query'):INGESTOR.observe(location['requested_zip'],[item['query']],item.get('retailer',''))
                 return self.send(200,{'items':selected,'item_count':sum(i['quantity'] for i in selected),'subtotal':round(sum(i['line_total'] for i in selected),2),'currency':'USD','cart_updated':False,'provider_cart_updated':False,'location_verified':all(i['location_verified'] for i in selected) if selected else False,'message':'Local app cart validated. Taxes, fees, and provider cart are not included.'})
             if self.path=='/api/v1/select':
                 result=RESULTS.get(data.get('search_id',''))

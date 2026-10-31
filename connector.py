@@ -129,7 +129,7 @@ def establish_location(page, requested_zip, allow_unverified):
 
 def wait_for_catalog(page, retailer='', timeout=22, clock=time.monotonic):
     """Wait beyond first paint and require a stable, nonempty retailer/card signature."""
-    start=clock();last=None;stable=0;state={'cards':[],'retailers':[]}
+    start=clock();last=None;stable=0;state={'cards':[],'retailers':[]};seen_cards={};seen_retailers={};scroll_index=0
     while clock()-start<timeout:
         try:body=page.locator('body').inner_text(timeout=2500)
         except Exception:
@@ -144,7 +144,19 @@ def wait_for_catalog(page, retailer='', timeout=22, clock=time.monotonic):
             if re.search(r'Enter your email|Log in|Continue with',text,re.I):
                 raise ConnectorError('login_required','Instacart requires interactive login.')
             raise ConnectorError('location_required','Instacart has an active address form. Confirm location before searching.')
-        state=page.evaluate(SNAPSHOT_JS)
+        current=page.evaluate(SNAPSHOT_JS)
+        for c in current['cards']:seen_cards[(c.get('url'),c.get('name'))]=c
+        for r in current['retailers']:seen_retailers[r.get('url')]=r
+        state={**current,'cards':list(seen_cards.values()),'retailers':list(seen_retailers.values())}
+        # Public shelves lazy-load on intersection. Visit each discovered shelf,
+        # retaining observations in case the page virtualizes previous shelves.
+        shelves=page.locator('[role="group"][aria-label="retailer"]')
+        if scroll_index<shelves.count():
+            try:shelves.nth(scroll_index).scroll_into_view_if_needed(timeout=2500)
+            except Exception:pass
+            scroll_index+=1;stable=0
+            page.wait_for_timeout(750)
+            continue
         signature=tuple((c.get('url'),c.get('name'),c.get('text')) for c in state['cards'])+tuple((r['url'],r['name']) for r in state['retailers'])
         stable=stable+1 if signature and signature==last else 0
         last=signature

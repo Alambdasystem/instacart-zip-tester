@@ -27,3 +27,18 @@ ZIP confirmation is not proof of a street address, delivery serviceability, an e
 ## Validation
 
 Regression tests cover later-loading retailers, fair allocation, cross-retailer identity, empty/incomplete rendering, screening, unrelated-header ZIPs, preservation of a mismatched ZIP, safe retailer slugs and cached diagnostics/geo disagreement. Existing API, cart, cache, ingestion, provider isolation and OpenAPI contract tests run with the new suite. Live rollout checks are recorded separately after deployment.
+
+- Visit each discovered visible retailer shelf to trigger normal lazy loading; retain observations across virtualized shelves. This does not change location or bypass any sign-in or screening requirement.
+
+
+## Demand scheduler and durable storage readiness
+- 394 curated food/restaurant discovery terms; Missouri store discovery metadata is not an allowlist.
+- Hot recent requests (15-minute activity window), warm repeat requests, and discovery tiers. Weighted cycle hot/hot/warm/hot/discovery reserves exploration when due.
+- Refresh eligibility: hot 240 seconds, warm 1800 seconds, discovery 21600 seconds. Price freshness remains five minutes; scheduling targets are not freshness guarantees.
+- Catalog, queue, attempts/hour and job retry times share SQLite storage. Configure CATALOG_PATH beneath an attached persistent disk, or RENDER_DISK_MOUNT_PATH. A configured path alone is not proof of durability.
+- Native SQLite backup method included; snapshots are not a database backup workflow.
+- Preserve observed ZIP separately; mismatched ZIP never counts as verified. Branch and delivery verification require provider evidence; ZIP verification alone does not establish a branch.
+- Coverage counters report distinct products, verified store IDs, verified/observed ZIPs, images, fresh/stale records.
+- Existing total retention ceiling remains 5000 offers; hourly attempt budget 120 and five ZIP footprint remain bounded.
+- Restaurant terms are discovery probes, not proof that Instacart supports chain menus.
+- Live Render disk attachment and deployment still require verification.

@@ -15,7 +15,7 @@ class Empty:
 
 class RenderPage:
     def __init__(self):self.t=0;self.calls=0
-    def locator(self,_):return Mock(inner_text=Mock(return_value='Current price: $2.99'))
+    def locator(self,selector):return Mock(inner_text=Mock(return_value='Current price: $2.99')) if selector=='body' else Empty()
     def get_by_role(self,*a,**kw):return Empty()
     def evaluate(self,script):
         self.calls+=1
@@ -41,6 +41,15 @@ class ConnectorTests(unittest.TestCase):
         discovered=discovered_retailers(state,normalize(state['cards'],'milk','',None))
         self.assertEqual([r['id'] for r in discovered],['kroger','aldi'])
         self.assertTrue(all(not r['branch_verified'] for r in discovered))
+    def test_lazy_shelves_are_visited_and_virtualized_cards_preserved(self):
+        page=RenderPage();page.store='kroger'
+        shelf=Mock();shelf.scroll_into_view_if_needed.side_effect=lambda **kw:setattr(page,'store','aldi')
+        shelves=Mock(count=Mock(return_value=1),nth=Mock(return_value=shelf))
+        page.locator=lambda selector:Mock(inner_text=Mock(return_value='Current price: $2.99')) if selector=='body' else shelves
+        page.evaluate=lambda script:{'cards':cards(page.store,7),'retailers':[{'url':'/store/'+page.store+'/s?k=milk','name':page.store}]}
+        state,settled=wait_for_catalog(page,clock=lambda:page.t)
+        self.assertTrue(settled);self.assertEqual(len(state['cards']),14)
+        shelf.scroll_into_view_if_needed.assert_called_once()
     def test_empty_does_not_count_as_stable_success(self):
         page=RenderPage();page.evaluate=Mock(return_value={'cards':[],'retailers':[]})
         state,settled=wait_for_catalog(page,timeout=3,clock=lambda:page.t)
@@ -60,7 +69,8 @@ class ConnectorTests(unittest.TestCase):
         page.get_by_role.return_value.first.get_attribute.side_effect=TimeoutError('detached')
         self.assertIsNone(observed_location(page))
     def test_body_replacement_during_catalog_render_recovers(self):
-        page=RenderPage();page.locator=Mock(return_value=Mock(inner_text=Mock(side_effect=[TimeoutError('replaced')]+['Current price: $2.99']*40)))
+        page=RenderPage();body=Mock(inner_text=Mock(side_effect=[TimeoutError('replaced')]+['Current price: $2.99']*40))
+        page.locator=lambda selector:body if selector=='body' else Empty()
         state,settled=wait_for_catalog(page,clock=lambda:page.t)
         self.assertTrue(settled);self.assertEqual(len(state['cards']),14)
     def test_unverified_collection_does_not_open_required_address_form(self):
