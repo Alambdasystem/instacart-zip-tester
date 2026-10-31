@@ -72,3 +72,24 @@ class CorrectionTests(unittest.TestCase):
     def test_nonfood_catalog_match_is_excluded(self):
         p={'items':[{'id':'1','name':'Milk Conditioner','price':2,'retailer':'aldi','url':'https://www.instacart.com/products/1'}],'location':{'verified':False}}
         self.catalog.ingest('63129','milk',p,300);self.assertEqual(self.catalog.search('milk'),[])
+
+    def test_pause_error_survives_restart(self):
+        worker=Ingestor(self.catalog,self.cache(),threading.Lock(),Mock(),queries=['milk'])
+        worker.pause_reason='login_required';worker.last_error={'status':'login_required','message':'Interactive login required'};worker.persist()
+        other=Ingestor(self.catalog,self.cache(),threading.Lock(),Mock(),queries=['milk'])
+        self.assertEqual(other.last_error,worker.last_error)
+        self.assertFalse(other.tick());other.fetch.assert_not_called()
+    def test_legacy_pause_gets_actionable_error(self):
+        self.catalog.save_state('ingestor:63129:',{'pause_reason':'login_required','jobs':[]})
+        worker=Ingestor(self.catalog,self.cache(),threading.Lock(),Mock(),queries=[])
+        self.assertEqual(worker.last_error['status'],'login_required')
+        self.assertIn('session',worker.last_error['message'])
+    def test_logs_exclude_location_and_secrets(self):
+        import io,contextlib
+        from telemetry import emit,REQUEST_ID
+        out=io.StringIO();token=REQUEST_ID.set('test-request')
+        try:
+            with contextlib.redirect_stdout(out):emit('search_failed',stage='opening provider search',address='private address',query='private query',api_key='secret')
+        finally:REQUEST_ID.reset(token)
+        row=json.loads(out.getvalue());self.assertEqual(row['request_id'],'test-request')
+        self.assertNotIn('private',out.getvalue());self.assertNotIn('secret',out.getvalue())

@@ -1,3 +1,4 @@
+from telemetry import emit
 from location_context import set_location
 """Bounded warm-catalog loop for a single free test instance."""
 import hashlib, json, os, sqlite3, threading, time, resource, shutil, re
@@ -115,10 +116,14 @@ class Ingestor:
         self._batch=False
         self.scheduler_turn=saved.get('scheduler_turn',0) if saved else 0
         self.mutex=threading.RLock();self.stop=threading.Event();self.pause_reason=None;self.active=None;self.last_error=None
-        if saved:self.pause_reason=saved.get('pause_reason')
+        if saved:
+            self.pause_reason=saved.get('pause_reason')
+            self.last_error=saved.get('last_error')
+            if self.pause_reason and not self.last_error:
+                self.last_error={'status':self.pause_reason,'message':'Provider access is paused. A successful user-authorized provider session is required before resuming.'}
     def persist(self):
         if self._batch:return
-        self.catalog.save_state(self.state_key,{'jobs':self.jobs,'attempts':self.attempts,'pause_reason':self.pause_reason,'scheduler_turn':self.scheduler_turn})
+        self.catalog.save_state(self.state_key,{'jobs':self.jobs,'attempts':self.attempts,'pause_reason':self.pause_reason,'last_error':self.last_error,'scheduler_turn':self.scheduler_turn})
     def tier(self,job):
         age=self.clock()-job.get('last_requested',0)
         if job.get('last_requested') and age<900:return 'hot'
@@ -191,7 +196,10 @@ class Ingestor:
                 job['failures']+=1;job['last_status']=e.status
                 job['next_due']=self.clock()+min(1800,60*(2**min(job['failures']-1,5)))
                 self.last_error={'query':job['query'],'status':e.status,'message':e.message}
-                if e.status in ('provider_blocked','login_required'):self.pause_reason=e.status
+                emit('ingestion_failed',provider='instacart',status=e.status)
+                if e.status in ('provider_blocked','login_required'):
+                    self.pause_reason=e.status
+                    emit('ingestion_paused',provider='instacart',pause_reason=e.status)
             return False
         except Exception:
             with self.mutex:

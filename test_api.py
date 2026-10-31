@@ -20,6 +20,19 @@ class MiddlewareTests(unittest.TestCase):
     def setUp(self):
         api.RESULTS.clear();api.RATE.clear();api.CACHE.entries.clear();api.CACHE.groups.clear();api.INVALIDATIONS.clear()
         with api.CATALOG.db() as db:db.execute('DELETE FROM search_snapshots')
+    def test_response_request_id_matches_log(self):
+        from telemetry import REQUEST_ID
+        rows=[]
+        with patch.object(api,'emit',side_effect=lambda event,**fields:rows.append((REQUEST_ID.get(),fields))):
+            with urlopen(self.url+'/ready') as r:
+                request_id=r.headers['X-Request-ID'];self.assertEqual(r.status,200)
+        self.assertEqual(rows[0][0],request_id)
+        self.assertEqual(rows[0][1]['http_status'],200)
+    def test_busy_wait_is_bounded_and_does_not_fetch(self):
+        with patch.dict(os.environ,{'CONNECTOR_ENABLED':'true'}),patch.object(api.LOCK,'acquire',return_value=False) as lock,patch.object(api,'search_browser') as fetch:
+            status,data=self.post('/api/v1/search',{'zip':'63129','query':'milk'})
+        self.assertEqual(status,429);self.assertEqual(data['error'],'busy')
+        lock.assert_called_once_with(timeout=15);fetch.assert_not_called()
     def test_price_size_normalization(self):
         rows=normalize([{'name':'Milk','text':'Milk\nCurrent price: $2.78\n1 gal'}],'milk','aldi','63129')
         self.assertEqual((rows[0]['price'],rows[0]['size']), (2.78,'1 gal'))

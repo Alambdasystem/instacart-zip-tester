@@ -1,3 +1,4 @@
+from telemetry import emit
 from provider_registry import CAPABILITIES
 import contextvars
 from location_context import current_location, has_precise_location
@@ -21,6 +22,7 @@ class Comparison:
             db.execute('CREATE TABLE IF NOT EXISTS vercel_calls (id INTEGER PRIMARY KEY, at REAL, path TEXT, status INTEGER)')
             db.execute('CREATE TABLE IF NOT EXISTS provider_state (provider TEXT PRIMARY KEY, retry_after REAL)')
     def activity(self,provider,z,outcome,items,status=None,cache_hit=False):
+        emit("provider_result",provider=provider,status=outcome,item_count=len(items),http_status=status)
         with self.catalog.db() as db:
             db.execute('INSERT INTO provider_activity VALUES (?,?,?,?,?,?,?,?)',(uuid.uuid4().hex,time.time(),provider,z,outcome,status,len(items),int(cache_hit)))
             db.execute('DELETE FROM provider_activity WHERE id NOT IN (SELECT id FROM provider_activity ORDER BY at DESC LIMIT 1000)')
@@ -104,7 +106,9 @@ class Comparison:
                         payload,meta=entry;cache_hits.append(True)
                     else:
                         if mode=='cache_only':continue
-                        if not lock.acquire(timeout=90):raise satsuma.ProviderError('busy','Provider already has a request in progress. Retry shortly.')
+                        if time.monotonic()-start>90:
+                            raise satsuma.ProviderError('request_budget_exceeded','Search time budget reached. Retry missing queries separately.')
+                        if not lock.acquire(timeout=15):raise satsuma.ProviderError('busy','Provider already has a request in progress. Retry shortly.')
                         try:
                             entry=None if mode=='refresh' else cache.get(key)
                             if entry:payload,meta=entry;cache_hits.append(True)

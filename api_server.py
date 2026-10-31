@@ -1,3 +1,4 @@
+from telemetry import REQUEST_ID, emit
 from result_store import ResultStore
 from location_context import normalize_location, set_location, context_id, current_location
 from work_coordinator import PriorityLock
@@ -53,8 +54,14 @@ def merge_parts(parts, hit_queries, fetched_queries):
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
+    def handle_one_request(self):
+        token=REQUEST_ID.set(uuid.uuid4().hex)
+        self.request_started=time.monotonic()
+        try:return super().handle_one_request()
+        finally:REQUEST_ID.reset(token)
     def send(self,code,data):
-        raw=json.dumps(data).encode(); self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.send_header('X-Request-ID',uuid.uuid4().hex); self.end_headers(); self.wfile.write(raw)
+        emit('api_response',method=getattr(self,'command',''),path=urlsplit(self.path).path,http_status=code,status=data.get('status',data.get('error','ok')),duration_ms=round((time.monotonic()-getattr(self,'request_started',time.monotonic()))*1000))
+        raw=json.dumps(data).encode(); self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.send_header('X-Request-ID',REQUEST_ID.get() or uuid.uuid4().hex); self.end_headers(); self.wfile.write(raw)
     def do_GET(self):
         route=urlsplit(self.path)
         if route.path=='/api/v1/providers/status':return self.send(200,COMPARISON.status())
@@ -183,7 +190,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(200,payload)
                 return self.send(200,{'status':'cache_miss','items':[],'missing_queries':missing,'location':{'requested_zip':z,'verified':False},'cache':{'hit':False,'sources':[]}})
             if len(RATE[client])>=3:return self.send(429,{'error':'rate_limited','message':'Limit: three live searches per minute.'})
-            if not LOCK.acquire(timeout=90): return self.send(429,{'error':'busy','message':'One browser search is running. Retry shortly.'})
+            if not LOCK.acquire(timeout=15): return self.send(429,{'error':'busy','message':'One browser search is running. Retry shortly.'})
             RATE[client].append(now)
             try:
                 # A waiting caller can reuse work completed by the previous owner.
@@ -211,8 +218,10 @@ class Handler(BaseHTTPRequestHandler):
                 RESULTS[search_id]={'created':now,'expires':time.time()+meta['expires_in'],'payload':payload}
                 return self.send(200,payload)
             except ConnectorError as e:
+                emit('search_failed',provider='instacart',status=e.status)
                 return self.send(422 if e.status in ('location_required','location_unsupported') else 502,{'status':e.status,'message':e.message,'items':[],'location':{'requested_zip':z,'verified':False}})
-            except Exception:
+            except Exception as e:
+                emit('search_failed',provider='instacart',error_type=type(e).__name__)
                 return self.send(502,{'status':'connector_error','message':'The browser connector failed. No product results were substituted.','items':[]})
             finally: LOCK.release()
         except (ValueError,TypeError): return self.send(422,{'error':'invalid_request','message':'Use a five-digit zip and 1–3 food queries. See /openapi.json.'})

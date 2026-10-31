@@ -1,3 +1,4 @@
+from telemetry import emit
 from location_context import current_location, context_id
 """Bounded public-browser connector. No private API, login, or challenge bypass."""
 import hashlib, re, time
@@ -248,6 +249,8 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
     except ImportError:
         raise ConnectorError('connector_unavailable','Browser dependencies are not installed on this instance.')
     items=[];warnings=[];locations=[];diagnostics=[];retailers={}
+    started=time.monotonic()
+    emit('search_started',provider='instacart',query_count=len(queries))
     with sync_playwright() as p:
         browser=p.chromium.launch(headless=True,args=['--disable-dev-shm-usage'])
         context=browser.new_context(locale='en-US');page=context.new_page();page.set_default_timeout(5000)
@@ -255,12 +258,25 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
         stage='opening provider search'
         try:
             for query in queries:
+                if items and time.monotonic()-started>90:
+                    warnings.append('Request time budget reached; remaining queries were not fetched. Retry missing queries separately.')
+                    break
+                stage='opening provider search'
+                phase_started=time.monotonic()
+                emit('search_stage',provider='instacart',stage=stage)
                 url='https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query)
                 page.goto(url,wait_until='commit',timeout=35000)
+                emit('search_stage_complete',provider='instacart',stage=stage,duration_ms=round((time.monotonic()-phase_started)*1000))
                 stage='confirming address control'
+                phase_started=time.monotonic()
+                emit('search_stage',provider='instacart',stage=stage)
                 observed,verified=establish_location(page,zip_code,allow_unverified)
+                emit('search_stage_complete',provider='instacart',stage=stage,duration_ms=round((time.monotonic()-phase_started)*1000))
                 stage='waiting for retailer shelves to stabilize'
+                phase_started=time.monotonic()
+                emit('search_stage',provider='instacart',stage=stage)
                 state,settled=wait_for_catalog(page,retailer)
+                emit('search_stage_complete',provider='instacart',stage=stage,duration_ms=round((time.monotonic()-phase_started)*1000))
                 # Recheck after hydration/search; never carry verification from a previous query.
                 observed=observed_location(page);verified=verified and observed==zip_code
                 if not verified and not allow_unverified:
@@ -279,5 +295,11 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
             observed_values={o for o,v in locations}
             return {'items':items,'location':{'requested_zip':zip_code,'observed_zip':next(iter(observed_values)) if len(observed_values)==1 else None,'verified':all(v for o,v in locations),'context_id':context_id(current_location(zip_code)),'address_selected':bool(current_location(zip_code).get('address')) and all(v for o,v in locations),'verification_method':'active_address_control','verification_scope':'zip_only','delivery_serviceability_verified':False,'store_branch_verified':False},'retailers':list(retailers.values()),'diagnostics':diagnostics,'warnings':list(dict.fromkeys(warnings))}
         except BrowserTimeout:
+            emit('search_failed',provider='instacart',stage=stage,status='provider_timeout',duration_ms=round((time.monotonic()-started)*1000))
             raise ConnectorError('provider_timeout','Instacart timed out while '+stage+'.')
-        finally:context.close();browser.close()
+        except ConnectorError as e:
+            emit('search_failed',provider='instacart',stage=stage,status=e.status,duration_ms=round((time.monotonic()-started)*1000))
+            raise
+        finally:
+            emit('search_finished',provider='instacart',duration_ms=round((time.monotonic()-started)*1000),item_count=len(items))
+            context.close();browser.close()
