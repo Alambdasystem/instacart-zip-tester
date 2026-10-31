@@ -235,6 +235,20 @@ class Ingestor:
             due=[j for j in self.jobs if j['next_due']<=now and self.context_key(j['zip'],j['retailer']) not in self.blocked_contexts]
             if not due:return False
             job=self.choose_job(due)
+        # New demand may make a job due while its exact snapshot is fresh.
+        # Preserve expiry; reserve the browser for misses and near-expiry refreshes.
+        set_location({'postal_code':job['zip'],'country_code':'US'})
+        try:snapshot=self.cache.get(self.cache.key(job['zip'],[job['query']],job['retailer'],True))
+        except Exception:
+            with self.mutex:self.last_error={'status':'cache_unavailable','message':'Background cache read failed; provider fetch deferred.'}
+            emit('ingestion_cache_unavailable',provider='instacart')
+            return False
+        if snapshot and snapshot[1]['expires_in']>60:
+            meta=snapshot[1]
+            with self.mutex:
+                job.update(last_status='fresh_cache',next_due=now+meta['expires_in']-60)
+                self.persist()
+            return False
         if not self.browser_lock.acquire(blocking=False):return False
         budget=deadline.begin(90)
         started=time.monotonic()

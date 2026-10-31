@@ -85,6 +85,22 @@ class IngestionTests(unittest.TestCase):
         self.worker.circuit={'paused_at':1000};self.worker.persist()
         other=Ingestor(self.catalog,self.cache,self.lock,self.fetch,clock=lambda:self.now)
         self.assertEqual(other.pause_reason,'login_required');self.assertFalse(other.blocked_contexts)
+    def test_new_demand_reuses_fresh_snapshot_without_new_browser_attempt(self):
+        self.worker.tick();self.fetch.reset_mock()
+        self.worker.enqueue('milk');self.worker.jobs[1]['next_due']=9999
+        attempts=len(self.worker.attempts)
+        self.assertFalse(self.worker.tick());self.fetch.assert_not_called()
+        self.assertEqual(len(self.worker.attempts),attempts)
+        self.assertEqual(self.worker.jobs[0]['last_status'],'fresh_cache')
+        self.assertEqual(self.worker.jobs[0]['next_due'],1240)
+    def test_cache_invalidation_still_allows_demand_refresh(self):
+        self.worker.tick();self.fetch.reset_mock()
+        self.cache.invalidate('*','63129');self.worker.enqueue('milk')
+        self.assertTrue(self.worker.tick());self.fetch.assert_called_once()
+    def test_cache_failure_defers_provider_work_without_crashing_loop(self):
+        self.cache.get=Mock(side_effect=RuntimeError('storage temporarily unavailable'))
+        self.assertFalse(self.worker.tick());self.fetch.assert_not_called()
+        self.assertEqual(self.worker.last_error['status'],'cache_unavailable')
     def test_shared_browser_lock_skips_background_work(self):
         self.lock.acquire()
         self.assertFalse(self.worker.tick());self.fetch.assert_not_called();self.lock.release()
