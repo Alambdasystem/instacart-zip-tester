@@ -73,12 +73,12 @@ class ConnectorTests(unittest.TestCase):
         page.locator=lambda selector:body if selector=='body' else Empty()
         state,settled=wait_for_catalog(page,clock=lambda:page.t)
         self.assertTrue(settled);self.assertEqual(len(state['cards']),14)
-    def test_unverified_collection_does_not_open_required_address_form(self):
+    def test_unverified_fallback_still_attempts_location_selection(self):
         page=Mock();page.locator.return_value.inner_text.return_value=''
         control=Mock();control.count.return_value=1;control.first.get_attribute.return_value='current address: 67570.'
         page.get_by_role.side_effect=lambda role,**kw:control if role=='button' else Empty()
         self.assertEqual(establish_location(page,'63129',True),('67570',False))
-        control.first.click.assert_not_called()
+        control.first.click.assert_called_once()
     def test_preserves_actual_different_zip(self):
         page=Mock();page.locator.return_value.inner_text.return_value='';control=Mock();control.count.return_value=1;control.first.get_attribute.return_value='current address: 67570. Or select a new address.'
         page.get_by_role.side_effect=lambda role,**kw:control if role=='button' else Mock(count=Mock(return_value=1),first=Mock(inner_text=Mock(return_value='Choose address')))

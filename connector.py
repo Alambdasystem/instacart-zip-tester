@@ -1,3 +1,4 @@
+from location_context import current_location, context_id
 """Bounded public-browser connector. No private API, login, or challenge bypass."""
 import hashlib, re, time
 from collections import defaultdict, deque
@@ -29,7 +30,7 @@ def normalize(cards, query, retailer, observed_zip):
         parsed_image=urlparse(image_url or '')
         if parsed_image.scheme!='https' or not (parsed_image.hostname and (parsed_image.hostname.endswith('.instacart.com') or parsed_image.hostname.endswith('.cloudfront.net') or parsed_image.hostname=='instacart.com')):image_url=None
         price_value = float(price.group(1).replace(',', ''))
-        result.append({'id': hashlib.sha256((source_store+'|'+name+'|'+str(size)+'|'+str(price_value)).encode()).hexdigest()[:24], 'name': name, 'size': size, 'price': price_value, 'currency': 'USD', 'retailer': source_store, 'query': query, 'observed_zip': observed_zip, 'source': 'instacart_public_browser', 'image_url':image_url, 'url': product_url or 'https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query), 'availability': 'Displayed; not independently verified'})
+        result.append({'id': hashlib.sha256((source_store+'|'+(source_path.split('?')[0] or name+'|'+str(size))).encode()).hexdigest()[:24], 'name': name, 'size': size, 'price': price_value, 'currency': 'USD', 'retailer': source_store, 'query': query, 'observed_zip': observed_zip, 'source': 'instacart_public_browser', 'image_url':image_url, 'url': product_url or 'https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query), 'availability': 'Displayed; not independently verified'})
     return balanced_items(result)
 
 def balanced_items(items, per_retailer=None, maximum=500):
@@ -85,17 +86,30 @@ def establish_location(page, requested_zip, allow_unverified):
     try:control.first.wait_for(state='visible',timeout=10000)
     except Exception:pass
     observed=observed_location(page)
+    requested=current_location(requested_zip)
+    address=requested.get('address')
+    if requested.get('coordinates'):raise ConnectorError('location_unsupported','Instacart browser requires an address; GPS-only selection is not supported by this connector.')
+    address_selected=False
     opened_picker=False
-    if observed!=requested_zip and not allow_unverified and control.count() and not page.get_by_role('dialog').count():
+    if (observed!=requested_zip or address) and control.count() and not page.get_by_role('dialog').count():
         field=page.get_by_role('textbox',name='Enter your address',exact=True)
         try:
             control.first.click(timeout=3000)
             opened_picker=True
             field.wait_for(state='visible',timeout=4000)
-            field.fill(requested_zip)
-            option=page.get_by_role('button',name=re.compile('^'+requested_zip+r'\b'))
+            search_text=(', '.join([address['line1'],address['city'],address['region'],requested_zip]) if address else requested_zip)
+            field.fill(search_text)
+            option=page.get_by_role('button',name=re.compile(re.escape(address['line1']) if address else '^'+requested_zip+r'\b',re.I))
             option.first.wait_for(state='visible',timeout=5000)
             option.first.click()
+            if address:
+                save=page.get_by_role('button',name=re.compile(r'^Save address$',re.I))
+                if save.count() and save.first.is_enabled():save.first.click(timeout=4000)
+                # Selection requires provider acknowledgment, never simply a successful click.
+                address_selected=not page.get_by_role('dialog').count()
+                active=(control.first.get_attribute('aria-label',timeout=1200) or control.first.inner_text(timeout=1200) or '').casefold()
+                tokens=[t for t in re.findall(r'[a-z0-9]+',address['line1'].casefold()) if t not in {'road','rd','street','st','avenue','ave','drive','dr','boulevard','blvd'}]
+                address_selected=address_selected and all(t in active for t in tokens)
             # A selected suggestion is not proof it was accepted. Read the address control again.
             deadline=time.monotonic()+5
             while time.monotonic()<deadline:
@@ -104,7 +118,8 @@ def establish_location(page, requested_zip, allow_unverified):
                 page.wait_for_timeout(400)
         except Exception:pass
     observed=observed_location(page)
-    verified=observed==requested_zip
+    verified=observed==requested_zip and (not address or address_selected)
+    if address and not address_selected:raise ConnectorError('location_required','Provider did not acknowledge the submitted address. Complete the address or authorized session setup.')
     if not verified and not allow_unverified:
         raise ConnectorError('location_required','Instacart did not confirm the requested ZIP in its active address control. A delivery address or authorized session may be required.')
     if not verified:
@@ -202,7 +217,7 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                 stage='waiting for retailer shelves to stabilize'
                 state,settled=wait_for_catalog(page,retailer)
                 # Recheck after hydration/search; never carry verification from a previous query.
-                observed=observed_location(page);verified=observed==zip_code
+                observed=observed_location(page);verified=verified and observed==zip_code
                 if not verified and not allow_unverified:
                     raise ConnectorError('location_required','Active provider ZIP changed or could not be confirmed after search.')
                 normalized=normalize(state['cards'],query,retailer,observed)
@@ -217,7 +232,7 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
             if not items:raise ConnectorError('no_results','No readable products matched the selected retailer. This is not proof of no stock.')
             for r in retailers.values():r['products_returned']=sum(i['retailer']==r['id'] for i in items)
             observed_values={o for o,v in locations}
-            return {'items':items,'location':{'requested_zip':zip_code,'observed_zip':next(iter(observed_values)) if len(observed_values)==1 else None,'verified':all(v for o,v in locations),'verification_method':'active_address_control','verification_scope':'zip_only','delivery_serviceability_verified':False,'store_branch_verified':False},'retailers':list(retailers.values()),'diagnostics':diagnostics,'warnings':list(dict.fromkeys(warnings))}
+            return {'items':items,'location':{'requested_zip':zip_code,'observed_zip':next(iter(observed_values)) if len(observed_values)==1 else None,'verified':all(v for o,v in locations),'context_id':context_id(current_location(zip_code)),'address_selected':bool(current_location(zip_code).get('address')) and all(v for o,v in locations),'verification_method':'active_address_control','verification_scope':'zip_only','delivery_serviceability_verified':False,'store_branch_verified':False},'retailers':list(retailers.values()),'diagnostics':diagnostics,'warnings':list(dict.fromkeys(warnings))}
         except BrowserTimeout:
             raise ConnectorError('provider_timeout','Instacart timed out while '+stage+'.')
         finally:context.close();browser.close()

@@ -71,3 +71,9 @@ Comparisons are observational, not a unified provider checkout.
 SearchResponse.retailers lists visible retailer sections (id, name, products_returned, branch_verified=false). diagnostics lists query, cards_seen, products_returned, retailers_with_products, settled, page_url and observed_zip. The public page is bounded to 500 products per query, without a per-retailer cap, collected round-robin after stabilization; it is not a complete catalog. Exact retailer requests filter returned links to that retailer id.
 
 location.verified means only that the active address-control ZIP matches the requested ZIP after the search. verification_scope=zip_only, store_branch_verified=false and delivery_serviceability_verified=false. Do not infer a local store from a product brand, retailer slug, or requested ZIP partition. Unverified cached rows keep their source observed_zip and must remain labeled as provider-context observations.
+
+
+## v0.4 location and cache flow
+SearchRequest accepts legacy `zip` or `location.postal_code` with country US and optional address (line1, city, region) OR coordinates (latitude, longitude). Conflicting ZIPs and unknown fields return 422. Address/GPS values are not silently discarded: unsupported provider modes return location_unsupported. Address selection requires provider acknowledgment and does not prove delivery serviceability.
+
+Modes: auto checks fresh memory then exact persistent snapshots and fetches misses; cache_only never fetches; refresh bypasses caches. Legacy live remains cache-first and catalog remains discovery-only. A cached result does not prove local stock. Search cache metadata includes sources; per-provider items include cache_source. Prices expire within five minutes; persistent reads do not extend expiry. Selection tokens remain process-local and expire on restart. Foreground searches wait up to 90 seconds for the single browser slot, ahead of the next background job.

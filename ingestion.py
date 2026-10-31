@@ -1,3 +1,4 @@
+from location_context import set_location
 """Bounded warm-catalog loop for a single free test instance."""
 import hashlib, json, os, sqlite3, threading, time, resource, shutil, re
 from pathlib import Path
@@ -24,6 +25,9 @@ class Catalog:
     def __init__(self,path):
         self.path=str(path)
         Path(self.path).parent.mkdir(parents=True,exist_ok=True)
+        backup=Path(self.path+'.pre-v04.sqlite')
+        if Path(self.path).exists() and not backup.exists():
+            with sqlite3.connect(self.path) as source,sqlite3.connect(str(backup)) as target:source.backup(target)
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS products (key TEXT PRIMARY KEY, zip TEXT, retailer TEXT, terms TEXT, seen REAL, expires REAL, payload TEXT)')
             columns={r[1] for r in db.execute('PRAGMA table_info(products)')}
@@ -44,7 +48,7 @@ class Catalog:
                 terms.add(query.casefold())
                 location=payload.get('location',{})
                 verified=bool(location.get('verified')) and location.get('observed_zip')==zip_code
-                data={**item,'observed_zip':location.get('observed_zip'),'provider_location_id':item.get('provider_location_id',location.get('provider_location_id')),'branch_verified':bool(location.get('branch_verified')),'delivery_verified':bool(location.get('delivery_verified')),'provider':provider,'requested_zip':zip_code,'location_verified':verified,'catalog_key':key}
+                data={**item,'observed_zip':location.get('observed_zip'),'provider_location_id':item.get('provider_location_id',location.get('provider_location_id')),'branch_verified':bool(location.get('branch_verified',location.get('store_branch_verified',False))),'delivery_verified':bool(location.get('delivery_verified',location.get('delivery_serviceability_verified',False))),'provider':provider,'requested_zip':zip_code,'location_verified':verified,'catalog_key':key}
                 db.execute('INSERT OR REPLACE INTO products (key,zip,retailer,terms,seen,expires,payload,provider) VALUES (?,?,?,?,?,?,?,?)',(key,zip_code,item.get('retailer',''),json.dumps(sorted(terms)),now,now+ttl,json.dumps(data),provider))
             db.execute('DELETE FROM products WHERE key IN (SELECT key FROM products ORDER BY seen DESC LIMIT -1 OFFSET 5000)')
     def search(self,query='',zip_code=None,retailer=None,limit=100,now=None,provider=None):
@@ -59,7 +63,9 @@ class Catalog:
             for raw,seen,expires,terms,provider_name in db.execute(sql,args):
                 p=json.loads(raw);p['provider']=provider_name
                 queries=query if isinstance(query,list) else [query]
-                if not any(q.casefold() in (p['name']+' '+terms).casefold() for q in queries):continue
+                import re
+                if query and not any(q.casefold() in json.loads(terms) or re.search(r'\b'+re.escape(q.casefold())+r'\b',p['name'].casefold()) for q in queries):continue
+                if query and re.search(r'\b(conditioner|shampoo|body wash|soap|lotion)\b',p['name'],re.I):continue
                 p.update({'age_seconds':max(0,int(now-seen)),'price_fresh':now<expires,'price_expires_in':max(0,int(expires-now)),'last_seen':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(seen))})
                 output.append(p)
                 if len(output)>=limit:break
@@ -104,10 +110,13 @@ class Ingestor:
             self.jobs=saved.get('jobs',self.jobs)
             self.attempts=saved.get('attempts',[])
         else:self.attempts=[]
-        self.scheduler_turn=0
+        self._batch=False
+        self.scheduler_turn=saved.get('scheduler_turn',0) if saved else 0
         self.mutex=threading.RLock();self.stop=threading.Event();self.pause_reason=None;self.active=None;self.last_error=None
+        if saved:self.pause_reason=saved.get('pause_reason')
     def persist(self):
-        self.catalog.save_state(self.state_key,{'jobs':self.jobs,'attempts':self.attempts})
+        if self._batch:return
+        self.catalog.save_state(self.state_key,{'jobs':self.jobs,'attempts':self.attempts,'pause_reason':self.pause_reason,'scheduler_turn':self.scheduler_turn})
     def tier(self,job):
         age=self.clock()-job.get('last_requested',0)
         if job.get('last_requested') and age<900:return 'hot'
@@ -127,7 +136,7 @@ class Ingestor:
         with self.mutex:
             for job in self.jobs:
                 if (job['zip'],job['retailer'],job['query'].casefold())==(z,store,query):
-                    job['requests']+=1;job['last_requested']=self.clock();job['next_due']=min(job['next_due'],self.clock());self.persist();return True
+                    job['requests']+=1;job['last_requested']=self.clock();job['next_due']=min(job['next_due'],self.clock()) if due is None else due;self.persist();return True
             zips={j['zip'] for j in self.jobs}
             if z not in zips and len(zips)>=5:return False
             if len(self.jobs)>=MAX_JOBS:return False
@@ -137,15 +146,18 @@ class Ingestor:
             return True
     def observe(self,zip_code,queries,retailer=''):
         with self.mutex:
+            self._batch=True
             new_zip=not any(j['zip']==zip_code for j in self.jobs)
             accepted=[q for q in queries if self.enqueue(q,zip_code=zip_code,retailer=retailer)]
             if new_zip and accepted:
                 for term in SEEDS:
                     if not any(j['zip']==zip_code and j['retailer']==retailer and j['query']==term for j in self.jobs):
-                        self.enqueue(term,zip_code=zip_code,retailer=retailer)
-                        self.jobs[-1]['requests']=0
-                        self.jobs[-1]['last_requested']=0
-                self.persist()
+                        added=self.enqueue(term,zip_code=zip_code,retailer=retailer)
+                        if added and self.jobs[-1]['query']==term and self.jobs[-1]['zip']==zip_code:
+                            self.jobs[-1]['requests']=0
+                            self.jobs[-1]['last_requested']=0
+            self._batch=False
+            self.persist()
             return {'accepted_queries':accepted,'rejected_queries':[q for q in queries if q not in accepted],'zip':zip_code,'retailer':retailer,'limits':{'zip_codes':5,'jobs':MAX_JOBS,'queries_per_zip_retailer':MAX_QUERIES_PER_ZIP}}
     def status(self):
         with self.mutex:
@@ -163,6 +175,7 @@ class Ingestor:
         if not self.browser_lock.acquire(blocking=False):return False
         try:
             with self.mutex:self.active=job['zip']+' / '+job['query'];self.attempts.append(now);job['last_status']='fetching';job['last_attempt']=now;self.persist()
+            set_location({'postal_code':job['zip'],'country_code':'US'})
             payload=self.fetch(job['zip'],[job['query']],job['retailer'],True)
             stamp=self.clock();payload['retrieved_at']=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(stamp))
             meta=self.cache.put(self.cache.key(job['zip'],[job['query']],job['retailer'],True),payload)

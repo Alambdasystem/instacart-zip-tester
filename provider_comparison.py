@@ -1,3 +1,5 @@
+import contextvars
+from location_context import current_location, has_precise_location
 """Provider-isolated comparison, cache, bounded read budget, and sanitized activity."""
 import json, os, threading, time, uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -8,9 +10,9 @@ import vercel_provider as vercel
 
 class Comparison:
     def __init__(self,catalog,instacart_cache,browser_lock,fetch_instacart):
-        self.catalog,self.icache,self.browser_lock,self.fetch_instacart=catalog,instacart_cache,browser_lock,fetch_instacart
-        self.scache=SearchCache(ttl=300);self.slock=threading.Lock()
-        self.vcaches={p:SearchCache(ttl=300) for p in vercel.PROVIDERS}
+        self.catalog,self.icache,self.browser_lock,self.fetch_instacart=catalog,instacart_cache.attach(catalog,'instacart'),browser_lock,fetch_instacart
+        self.scache=SearchCache(ttl=300).attach(catalog,'mealme_satsuma');self.slock=threading.Lock()
+        self.vcaches={p:SearchCache(ttl=300).attach(catalog,p) for p in vercel.PROVIDERS}
         self.vlocks={p:threading.Lock() for p in vercel.PROVIDERS}
         with catalog.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS provider_activity (id TEXT PRIMARY KEY, at REAL, provider TEXT, zip TEXT, outcome TEXT, http_status INTEGER, item_count INTEGER, cache_hit INTEGER)')
@@ -62,7 +64,8 @@ class Comparison:
         except satsuma.ProviderError as e:
             with self.catalog.db() as db:
                 db.execute('UPDATE vercel_calls SET status=? WHERE id=?',(e.http_status,call_id))
-                db.execute('INSERT OR REPLACE INTO provider_state VALUES (?,?)',('vercel_proxy',time.time()+300))
+
+                if e.http_status in (401,403,402,429) or e.http_status is None:db.execute('INSERT OR REPLACE INTO provider_state VALUES (?,?)',('vercel_proxy',time.time()+300))
             raise
     def status(self):
         with self.catalog.db() as db:
@@ -71,10 +74,10 @@ class Comparison:
             vused=db.execute('SELECT COUNT(*) FROM vercel_calls').fetchone()[0]
         return {'vercel_proxy':{'configured':bool(os.getenv('VERCEL_MEALME_API_KEY')),'base_url':vercel.BASE_URL,
                 'read_budget':max(0,min(100,int(os.getenv('VERCEL_MEALME_READ_BUDGET','0')))),
-                'attempts_in_database':vused,'background_ingestion':False,'live_contract_verified':False},'satsuma_configured':bool(os.getenv('SATSUMA_API_KEY')),'satsuma_base_url':satsuma.BASE_URL,
+                'attempts_in_database':vused,'background_ingestion':False,'live_contract_verified':False,'documented_routes_verified':True},'satsuma_configured':bool(os.getenv('SATSUMA_API_KEY')),'satsuma_base_url':satsuma.BASE_URL,
                 'satsuma_background_ingestion':False,'read_attempts_in_database':used,
                 'satsuma_read_budget':int(os.getenv('SATSUMA_READ_BUDGET','10')),
-                'storage':'SQLite on current instance; ephemeral unless CATALOG_PATH is on a persistent disk',
+                'storage':{'engine':'sqlite','persistent_mount_configured':bool(os.getenv('RENDER_DISK_MOUNT_PATH'))},
                 'activity':[dict(zip(('at','provider','zip','outcome','http_status','item_count','cache_hit'),r)) for r in rows]}
     def one(self,provider,z,queries,store,allow,mode):
         start=time.monotonic();items=[];warnings=[];cache_hits=[];location={'requested_zip':z,'verified':False}
@@ -86,6 +89,8 @@ class Comparison:
                 status='cached' if items else 'not_cached'
                 warnings=['Stored snapshots only; no upstream request. Compare freshness and location before use.']
                 cache_hits=[bool(items)]
+                observed={i.get('observed_zip') for i in items}
+                location={'requested_zip':z,'observed_zip':next(iter(observed)) if len(observed)==1 else None,'verified':bool(items) and all(i.get('location_verified') for i in items)}
             else:
                 if provider!='instacart' and store:
                     raise satsuma.ProviderError('unsupported_retailer','The retailer filter applies only to Instacart. Clear it for other providers.')
@@ -93,13 +98,14 @@ class Comparison:
                 lock=self.browser_lock if provider=='instacart' else self.vlocks[provider] if provider in vercel.PROVIDERS else self.slock
                 for q in queries:
                     key=cache.key(z,[q],store,allow)
-                    entry=cache.get(key)
+                    entry=None if mode=='refresh' else cache.get(key)
                     if entry:
                         payload,meta=entry;cache_hits.append(True)
                     else:
-                        if not lock.acquire(blocking=False):raise satsuma.ProviderError('busy','Provider already has a request in progress. Retry shortly.')
+                        if mode=='cache_only':continue
+                        if not lock.acquire(timeout=90):raise satsuma.ProviderError('busy','Provider already has a request in progress. Retry shortly.')
                         try:
-                            entry=cache.get(key)
+                            entry=None if mode=='refresh' else cache.get(key)
                             if entry:payload,meta=entry;cache_hits.append(True)
                             else:
                                 if provider=='instacart':
@@ -117,10 +123,10 @@ class Comparison:
                     if payload.get('error'):error=payload['error'];upstream=error.get('http_status')
                     found_retailers.update({r['id']:r for r in payload.get('retailers',[])})
                     diagnostics.extend(payload.get('diagnostics',[]))
-                    items.extend({**i,'provider':provider,'age_seconds':meta['age_seconds'],'price_expires_in':meta['expires_in'],
+                    items.extend({**i,'provider':provider,'cache_source':meta.get('source','live'),'age_seconds':meta['age_seconds'],'price_expires_in':meta['expires_in'],
                                   'price_fresh':meta['expires_in']>0,'retrieved_at':payload.get('retrieved_at'),
                                   'location_verified':payload['location']['verified']} for i in payload['items'])
-                status=('partial' if items else 'error') if error else ('ok' if items else 'empty')
+                status=('partial' if items else 'error') if error else ('ok' if items else 'not_cached' if mode=='cache_only' else 'empty')
         except (satsuma.ProviderError,ConnectorError) as e:
             status='partial' if items else 'error';upstream=getattr(e,'http_status',None)
             error={'code':getattr(e,'code',getattr(e,'status','provider_error')),'message':e.message,'http_status':upstream}
@@ -139,7 +145,7 @@ class Comparison:
                            'retailers':sorted({i.get('retailer','') for i in items if i.get('retailer')})}}
     def compare(self,z,queries,store,allow,mode,providers):
         with ThreadPoolExecutor(max_workers=2) as pool:
-            futures=[pool.submit(self.one,p,z,queries,store,allow,mode) for p in providers]
+            futures=[pool.submit(contextvars.copy_context().run,self.one,p,z,queries,store,allow,mode) for p in providers]
             results=[f.result() for f in futures]
         return {'comparison_id':uuid.uuid4().hex,'zip':z,'queries':queries,'mode':mode,
                 'compared_at':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'providers':results,

@@ -1,3 +1,4 @@
+from location_context import has_precise_location
 """Bounded read-only adapter for mealmeai.vercel.app, separate from Satsuma.
 Catalog mappings are provisional until verified with this account's live key.
 """
@@ -56,6 +57,7 @@ def normalize(data, provider, store, query, zip_code):
     return items
 
 def search(zip_code, queries, provider, request):
+    if has_precise_location(zip_code):raise ProviderError('location_unsupported','Proxy street-address/GPS parameters are not verified; use ZIP discovery explicitly.')
     upstream = PROVIDERS[provider]
     data = request('/api/stores/search', {'providerId': upstream,
         'merchantType': 'grocery' if upstream == 'kroger' else 'restaurant',

@@ -17,7 +17,9 @@ class MiddlewareTests(unittest.TestCase):
         try:r=urlopen(Request(self.url+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json'}))
         except HTTPError as e:r=e
         return r.status,json.load(r)
-    def setUp(self): api.RESULTS.clear();api.RATE.clear();api.CACHE.entries.clear();api.CACHE.groups.clear();api.INVALIDATIONS.clear()
+    def setUp(self):
+        api.RESULTS.clear();api.RATE.clear();api.CACHE.entries.clear();api.CACHE.groups.clear();api.INVALIDATIONS.clear()
+        with api.CATALOG.db() as db:db.execute('DELETE FROM search_snapshots')
     def test_price_size_normalization(self):
         rows=normalize([{'name':'Milk','text':'Milk\nCurrent price: $2.78\n1 gal'}],'milk','aldi','63129')
         self.assertEqual((rows[0]['price'],rows[0]['size']), (2.78,'1 gal'))
@@ -72,6 +74,28 @@ class MiddlewareTests(unittest.TestCase):
             status,data=self.post('/api/v1/search',{'zip':'63129','queries':['milk','eggs'],'retailer':'aldi'})
             self.assertEqual(status,200);self.assertEqual(fetch.call_args.args[1],['eggs'])
             self.assertTrue(data['cache']['partial_hit']);self.assertEqual(len(data['items']),2)
+    def test_unknown_location_fields_and_conflicting_zip_rejected(self):
+        self.assertEqual(self.post('/api/v1/search',{'zip':'63129','query':'milk','address':'ignored'})[0],422)
+        self.assertEqual(self.post('/api/v1/search',{'zip':'63129','query':'milk','location':{'postal_code':'63110'}})[0],422)
+    def test_cache_only_miss_never_calls_live_and_persistent_hit_reuses(self):
+        item=normalize([{'name':'Milk','text':'Current price: $2.78'}],'milk','aldi','63129')[0]
+        payload={'items':[item],'location':{'requested_zip':'63129','observed_zip':'63129','verified':True},'warnings':[]}
+        with patch.dict(os.environ,{'CONNECTOR_ENABLED':'true'}),patch.object(api,'search_browser',return_value=payload) as fetch:
+            code,d=self.post('/api/v1/search',{'zip':'63129','query':'milk','mode':'cache_only'})
+            self.assertEqual(d['status'],'cache_miss');fetch.assert_not_called()
+            self.post('/api/v1/search',{'zip':'63129','query':'milk'})
+            api.CACHE.entries.clear();api.CACHE.groups.clear()
+            code,d=self.post('/api/v1/search',{'zip':'63129','query':'milk','mode':'cache_only'})
+            self.assertEqual(code,200);self.assertEqual(fetch.call_count,1);self.assertEqual(d['cache']['sources'],['persistent_cache'])
+    def test_address_context_reaches_connector_and_cannot_share_zip_snapshot(self):
+        from location_context import current_location
+        def provider(z,queries,store,flag):
+            self.assertEqual(current_location(z)['address']['line1'],'5430 Telegraph Road')
+            raise ConnectorError('location_required','Provider acknowledgment required')
+        with patch.dict(os.environ,{'CONNECTOR_ENABLED':'true'}),patch.object(api,'search_browser',side_effect=provider):
+            code,d=self.post('/api/v1/search',{'location':{'postal_code':'63129','address':{'line1':'5430 Telegraph Road','city':'St. Louis','region':'MO'}},'queries':['milk']})
+            self.assertEqual(code,422);self.assertFalse(d['location']['verified'])
+
     def test_image_url_validation(self):
         card={'name':'Milk','text':'Current price: $2.78\n1 gal','image_url':'https://www.instacart.com/image-server/milk.jpg'}
         self.assertEqual(normalize([card],'milk','aldi',None)[0]['image_url'],card['image_url'])

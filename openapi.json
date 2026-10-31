@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "InstaSearch API Contract",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "Experimental integration contract. Current provider: Instacart public-browser connector. No authentication on this prototype. Use only test traffic. Cart validation does not update Instacart or place an order. Location and prices must be checked independently. Search snapshots expire within five minutes and can disappear on restart. Retailer discovery reflects visible provider context. ZIP confirmation is not store-branch or delivery verification."
   },
   "servers": [
@@ -512,7 +512,6 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "zip",
                   "queries"
                 ],
                 "properties": {
@@ -531,7 +530,10 @@
                   "mode": {
                     "enum": [
                       "catalog",
-                      "live"
+                      "live",
+                      "auto",
+                      "cache_only",
+                      "refresh"
                     ],
                     "default": "catalog"
                   },
@@ -555,8 +557,24 @@
                   "allow_unverified_location": {
                     "type": "boolean",
                     "default": false
+                  },
+                  "location": {
+                    "$ref": "#/components/schemas/LocationInput"
                   }
-                }
+                },
+                "anyOf": [
+                  {
+                    "required": [
+                      "zip"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "location"
+                    ]
+                  }
+                ],
+                "additionalProperties": false
               },
               "example": {
                 "zip": "63110",
@@ -801,24 +819,37 @@
             "type": "boolean",
             "default": false,
             "description": "Explicit consent to non-local demo results; never implies ZIP verification."
+          },
+          "location": {
+            "$ref": "#/components/schemas/LocationInput"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "cache_only",
+              "refresh",
+              "catalog",
+              "live"
+            ],
+            "default": "auto"
           }
         },
-        "required": [
-          "zip"
-        ],
+        "required": [],
         "anyOf": [
           {
             "required": [
-              "query"
+              "zip"
             ]
           },
           {
             "required": [
-              "queries"
+              "location"
             ]
           }
         ],
-        "description": "Provide query or queries. If both are present, queries takes precedence."
+        "description": "Provide query or queries. If both are present, queries takes precedence.",
+        "additionalProperties": false
       },
       "SearchResponse": {
         "type": "object",
@@ -1388,8 +1419,11 @@
           },
           "mode": {
             "enum": [
-              "live",
-              "catalog"
+              "auto",
+              "cache_only",
+              "refresh",
+              "catalog",
+              "live"
             ]
           },
           "compared_at": {
@@ -1405,6 +1439,82 @@
           "note": {
             "type": "string"
           }
+        }
+      },
+      "LocationInput": {
+        "type": "object",
+        "required": [
+          "postal_code"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "postal_code": {
+            "type": "string",
+            "pattern": "^[0-9]{5}$"
+          },
+          "country_code": {
+            "type": "string",
+            "enum": [
+              "US"
+            ]
+          },
+          "address": {
+            "type": "object",
+            "required": [
+              "line1",
+              "city",
+              "region"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "line1": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "line2": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "city": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "region": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            }
+          },
+          "coordinates": {
+            "type": "object",
+            "required": [
+              "latitude",
+              "longitude"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "latitude": {
+                "type": "number",
+                "minimum": -90,
+                "maximum": 90
+              },
+              "longitude": {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180
+              }
+            }
+          }
+        },
+        "not": {
+          "required": [
+            "address",
+            "coordinates"
+          ]
         }
       }
     }

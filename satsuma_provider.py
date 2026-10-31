@@ -1,3 +1,4 @@
+from location_context import current_location
 """Read-only account-enabled MealMe/Satsuma adapter. Never follows credential redirects."""
 import hashlib, json, math, os, time
 from urllib.request import Request, build_opener, HTTPRedirectHandler
@@ -23,7 +24,13 @@ def get_json(url, headers=None):
             return json.loads(body)
     except HTTPError as e:
         code = 'authentication_failed' if e.code in (401,403) else 'rate_limited' if e.code==429 else 'service_unavailable' if e.code>=500 else 'http_error'
-        raise ProviderError(code, 'Provider returned HTTP '+str(e.code)+'.', e.code) from None
+        # Preserve only recognized semantic codes; never return arbitrary upstream bodies.
+        try:
+            body=json.loads(e.read(65536));raw=body.get('code') or body.get('error')
+            if isinstance(raw,dict):raw=raw.get('code')
+            if raw in {'restaurant_not_found','product_not_found','store_not_found','billing_required','payment_required','rate_limit_exceeded','kroger_customer_auth_required'}:code=raw
+        except (ValueError,AttributeError,TypeError):pass
+        raise ProviderError(code, 'Provider returned HTTP '+str(e.code)+' ('+code+').', e.code) from None
     except (URLError, TimeoutError): raise ProviderError('connection_failed','Provider connection failed or timed out.') from None
     except (ValueError, UnicodeError): raise ProviderError('invalid_response','Provider returned invalid JSON.') from None
 
@@ -73,13 +80,16 @@ def normalize(data,query,zip_code):
     return items
 
 def search(zip_code,queries,request):
-    lat,lon=zip_coordinates(zip_code)
+    context=current_location(zip_code)
+    coords=context.get('coordinates')
+    if context.get('address'):raise ProviderError('location_unsupported','This adapter supports GPS or ZIP centroid discovery; street-address resolution is not yet verified.')
+    lat,lon=(coords['latitude'],coords['longitude']) if coords else zip_coordinates(zip_code)
     items=[]
     for query in queries:
         data=request('/product',{'latitude':lat,'longitude':lon,'query':query,'size':25,'page':1})
         items.extend(normalize(data,query,zip_code))
     return {'provider':'mealme_satsuma','items':items,
-        'location':{'requested_zip':zip_code,'observed_zip':None,'verified':False,'latitude':lat,'longitude':lon,'scope':'zip_centroid','coordinate_source':'zippopotam.us'},
+        'location':{'requested_zip':zip_code,'observed_zip':None,'verified':False,'latitude':lat,'longitude':lon,'scope':'gps_discovery' if coords else 'zip_centroid','coordinate_source':'client' if coords else 'zippopotam.us'},
         'retrieved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),
         'warnings':['MealMe account uses Satsuma. ZIP centroid search does not prove delivery serviceability.',
                     'Raw provider prices retained; price units require live contract verification before cart use.']}

@@ -147,3 +147,11 @@ checkout, orders, or payments are called. Missing or unsafe image URLs stay abse
 Portal documentation inspected: https://mealmeai.vercel.app/docs
 Local tests: `python -m unittest discover -q`.
 Live activation requires the account's own key and an approved read budget.
+
+
+## Current correction release: v0.4
+The deployed service now uses paid 2 GB compute and a 1 GB disk at /var/data. Older sections above describe historical releases. Current seeds: 394 curated terms, five requested ZIPs and 5,000 maximum jobs. Local provider budgets persist on disk and are not increased by this release.
+
+Search and comparison auto mode check fresh memory and exact durable snapshots, fetching only missing queries. Cache-only never calls upstream; refresh bypasses fresh caches. Stored /catalog remains discovery search with explicit age/expiry. Address/GPS input is supported by the request contract; each adapter either uses its supported mechanism or returns location_unsupported. No location is considered verified because an address was merely supplied. Instacart browser address selection requires visible acknowledgment; delivery and exact branch are separate unknowns.
+
+Foreground browser work waits ahead of subsequent background jobs and rechecks caches after waiting. Native SQLite pre-v04 backup is created once before schema additions. This on-disk backup is not an offsite disaster recovery policy.
