@@ -1,5 +1,11 @@
 import deadline
+import cancellation
 from telemetry import emit
+from search_service import SearchService
+from contextlib import contextmanager
+from offer_store import OfferStore
+from job_store import JobStore
+from provider_session import request_context_id
 from location_context import set_location, current_location, context_id
 """Bounded warm-catalog loop for a single free test instance."""
 import hashlib, json, os, sqlite3, threading, time, resource, shutil, re
@@ -33,6 +39,9 @@ class Catalog:
         backup05=Path(self.path+'.pre-v05.sqlite')
         if Path(self.path).exists() and not backup05.exists():
             with sqlite3.connect(self.path) as source,sqlite3.connect(str(backup05)) as target:source.backup(target)
+        backup06=Path(self.path+'.pre-v06.sqlite')
+        if Path(self.path).exists() and not backup06.exists():
+            with sqlite3.connect(self.path) as source,sqlite3.connect(str(backup06)) as target:source.backup(target)
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS products (key TEXT PRIMARY KEY, zip TEXT, retailer TEXT, terms TEXT, seen REAL, expires REAL, payload TEXT)')
             columns={r[1] for r in db.execute('PRAGMA table_info(products)')}
@@ -44,7 +53,23 @@ class Catalog:
             db.execute('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied REAL)')
             db.execute('INSERT OR IGNORE INTO schema_migrations VALUES (5,?)',(time.time(),))
             db.execute('CREATE TABLE IF NOT EXISTS worker_state (id TEXT PRIMARY KEY, payload TEXT)')
-    def db(self): return sqlite3.connect(self.path,timeout=5)
+            OfferStore.schema(db);JobStore.schema(db)
+            if not db.execute('SELECT 1 FROM schema_migrations WHERE version=6').fetchone():
+                for key,z,store,prov,ctx,terms,seen,expires,raw in db.execute('SELECT key,zip,retailer,provider,context_id,terms,seen,expires,payload FROM products').fetchall():
+                    OfferStore.put(db,key,{'requested_zip':z,'retailer':store,'provider':prov,'context_id':ctx,**json.loads(raw)},terms,seen,expires)
+                for worker,raw in db.execute('SELECT id,payload FROM worker_state').fetchall():
+                    state=json.loads(raw)
+                    if worker.startswith('ingestor:'):
+                        JobStore.save(db,worker,state.get('jobs',[]));state['queue_schema']=6
+                        db.execute('UPDATE worker_state SET payload=? WHERE id=?',(json.dumps(state),worker))
+                db.execute('INSERT INTO schema_migrations VALUES(6,?)',(time.time(),))
+
+    @contextmanager
+    def db(self):
+        connection=sqlite3.connect(self.path,timeout=5);connection.execute('PRAGMA foreign_keys=ON')
+        try:
+            with connection:yield connection
+        finally:connection.close()
     def ingest(self,zip_code,query,payload,ttl,now=None):
         now=time.time() if now is None else now
         with self.db() as db:
@@ -53,6 +78,8 @@ class Catalog:
                 identity=((item.get('url') or '').split('?')[0] or item['name']+'|'+str(item.get('size')))+'|'+item.get('retailer','')+'|'+zip_code
                 if provider!='instacart':identity=provider+'|'+str(item.get('provider_location_id'))+'|'+item['id']+'|'+zip_code
                 location=payload.get('location',{})
+                branch=item.get('provider_location_id',location.get('provider_location_id'))
+                if branch is not None:identity+='|branch:'+str(branch)
                 ctx=location.get('context_id')
                 fulfillment=payload.get('fulfillment','unknown')
                 key=hashlib.sha256((identity+'|'+str(ctx or 'legacy-unresolved')+'|'+fulfillment).encode()).hexdigest()
@@ -64,23 +91,19 @@ class Catalog:
                 terms.add(query.casefold())
                 location=payload.get('location',{})
                 verified=bool(location.get('verified')) and location.get('observed_zip')==zip_code
-                data={**item,'observed_zip':location.get('observed_zip'),'provider_location_id':item.get('provider_location_id',location.get('provider_location_id')),'branch_verified':bool(location.get('branch_verified',location.get('store_branch_verified',False))),'delivery_verified':bool(location.get('delivery_verified',location.get('delivery_serviceability_verified',False))),'provider':provider,'context_id':ctx,'fulfillment':fulfillment,'product_key':product_key,'requested_zip':zip_code,'location_verified':verified,'catalog_key':key}
+                data={**item,'observed_zip':location.get('observed_zip'),'provider_location_id':item.get('provider_location_id',location.get('provider_location_id')),'branch_verified':bool(location.get('branch_verified',location.get('store_branch_verified',False))),'delivery_verified':bool(location.get('delivery_verified',location.get('delivery_serviceability_verified',False))),'provider':provider,'context_id':ctx,'fulfillment':fulfillment,'product_key':product_key,'provider_context':location.get('provider_context',{}),'requested_zip':zip_code,'location_verified':verified,'catalog_key':key}
                 db.execute('INSERT OR REPLACE INTO products (key,zip,retailer,terms,seen,expires,payload,provider,context_id) VALUES (?,?,?,?,?,?,?,?,?)',(key,zip_code,item.get('retailer',''),json.dumps(sorted(terms)),now,now+ttl,json.dumps(data),provider,ctx))
+                OfferStore.put(db,key,data,json.dumps(sorted(terms)),now,now+ttl)
             db.execute('DELETE FROM product_descriptions WHERE rowid IN (SELECT rowid FROM product_descriptions ORDER BY rowid DESC LIMIT -1 OFFSET 10000)')
             db.execute('DELETE FROM products WHERE key IN (SELECT key FROM products ORDER BY seen DESC LIMIT -1 OFFSET 5000)')
+            OfferStore.prune(db)
     def search(self,query='',zip_code=None,retailer=None,limit=100,now=None,provider=None,context=None):
         now=time.time() if now is None else now
-        where=[];args=[]
-        if context:where.append('context_id=?');args.append(context)
-        if provider:where.append('provider=?');args.append(provider)
-        if zip_code:where.append('zip=?');args.append(zip_code)
-        if retailer:where.append('retailer=?');args.append(retailer)
-        sql='SELECT payload,seen,expires,terms,provider FROM products'+(' WHERE '+' AND '.join(where) if where else '')+' ORDER BY seen DESC LIMIT 5000'
         output=[]
         with self.db() as db:
-            for raw,seen,expires,terms,provider_name in db.execute(sql,args):
+            for raw,seen,expires,terms,provider_name in OfferStore.rows(db,zip_code,retailer,provider,context):
                 p=json.loads(raw);p['provider']=provider_name
-                p['context_compatible']=bool(p.get('context_id') and p['context_id']==context_id(current_location(zip_code or p.get('requested_zip'))))
+                p['context_compatible']=bool(p.get('context_id') and p['context_id']==(request_context_id(current_location(zip_code or p.get('requested_zip'))) if provider_name=='instacart' else context_id(current_location(zip_code or p.get('requested_zip')))))
                 queries=query if isinstance(query,list) else [query]
                 import re
                 if query and not any(matches_query(p['name'],q) for q in queries):continue
@@ -95,14 +118,23 @@ class Catalog:
         if zip_code:where.append('zip=?');args.append(zip_code)
         with self.db() as db:
             cursor=db.execute('UPDATE products SET expires=0'+(' WHERE '+' AND '.join(where) if where else ''),args)
-            return cursor.rowcount
+            count=cursor.rowcount
+            if retailer=='*' and not zip_code:db.execute('UPDATE offers SET expires=0')
+            else:
+                where2=[];args2=[]
+                if retailer!='*':where2.append('retailer=?');args2.append(retailer)
+                if zip_code:where2.append('context_key IN (SELECT id FROM offer_contexts WHERE requested_zip=?)');args2.append(zip_code)
+                db.execute('UPDATE offers SET expires=0 WHERE '+' AND '.join(where2),args2)
+            return count
     def counts(self,now=None):
         now=time.time() if now is None else now
         with self.db() as db:
-            total,fresh=db.execute('SELECT COUNT(*),COALESCE(SUM(expires>?),0) FROM products',(now,)).fetchone()
-            rows=[json.loads(r[0]) for r in db.execute('SELECT payload FROM products')]
+            total,fresh=db.execute('SELECT COUNT(*),COALESCE(SUM(expires>?),0) FROM offers',(now,)).fetchone()
+            rows=[json.loads(r[0]) for r in OfferStore.rows(db)]
+            descriptions=db.execute('SELECT COUNT(*) FROM offer_products').fetchone()[0]
+            delivery_fresh=db.execute('SELECT COUNT(*) FROM offers o JOIN offer_contexts c ON c.id=o.context_key WHERE o.expires>? AND c.branch_verified=1 AND c.delivery_verified=1',(now,)).fetchone()[0]
         stores={(p.get('provider'),p.get('provider_location_id')) for p in rows if p.get('branch_verified') and p.get('provider_location_id')}
-        return {'products':total,'fresh_prices':fresh,'stale_prices':total-fresh,'max_products':5000,
+        return {'schema_version':6,'retained_descriptions':descriptions,'fresh_delivery_verified_offers':delivery_fresh,'products':total,'fresh_prices':fresh,'stale_prices':total-fresh,'max_products':5000,
                 'distinct_products':len({(p.get('provider'),p.get('retailer'),(p.get('url') or p.get('id','')).split('?')[0]) for p in rows}),
                 'with_images':sum(bool(p.get('image_url') or p.get('image')) for p in rows),
                 'verified_store_locations':len(stores),
@@ -111,10 +143,16 @@ class Catalog:
                 'unverified_location_products':sum(not p.get('location_verified') for p in rows)}
 
     def save_state(self,key,payload):
-        with self.db() as db:db.execute('INSERT OR REPLACE INTO worker_state VALUES (?,?)',(key,json.dumps(payload)))
+        with self.db() as db:
+            if key.startswith('ingestor:'):
+                JobStore.save(db,key,payload.get('jobs',[]));payload={**payload,'queue_schema':6}
+            db.execute('INSERT OR REPLACE INTO worker_state VALUES (?,?)',(key,json.dumps(payload)))
     def load_state(self,key):
-        with self.db() as db:row=db.execute('SELECT payload FROM worker_state WHERE id=?',(key,)).fetchone()
-        return json.loads(row[0]) if row else None
+        with self.db() as db:
+            row=db.execute('SELECT payload FROM worker_state WHERE id=?',(key,)).fetchone()
+            state=json.loads(row[0]) if row else None
+            if state and state.get('queue_schema')==6:state['jobs']=JobStore.load(db,key)
+        return state
     def backup(self,destination):
         with self.db() as source,sqlite3.connect(str(destination)) as target:source.backup(target)
 
@@ -251,14 +289,14 @@ class Ingestor:
             return False
         if not self.browser_lock.acquire(blocking=False):return False
         budget=deadline.begin(90)
+        cancel_token=cancellation.bind(self.stop)
         started=time.monotonic()
         try:
             with self.mutex:self.active=job['zip']+' / '+job['query'];self.attempts.append(now);job['last_status']='fetching';job['last_attempt']=now;self.persist()
             set_location({'postal_code':job['zip'],'country_code':'US'})
-            payload=self.fetch(job['zip'],[job['query']],job['retailer'],True)
-            stamp=self.clock();payload['retrieved_at']=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(stamp))
-            meta=self.cache.put(self.cache.key(job['zip'],[job['query']],job['retailer'],True),payload)
-            self.catalog.ingest(job['zip'],job['query'],payload,meta['expires_in'],now=stamp)
+            entries,_,_,_=SearchService(self.catalog,self.cache,self.browser_lock,self.fetch).resolve(job['zip'],[job['query']],job['retailer'],True,'refresh',locked=True)
+            if not entries:raise ConnectorError('no_results','No priced products were returned.')
+            stamp=self.clock()
             with self.mutex:
                 interval={'hot':240,'warm':1800,'discovery':21600}[self.tier(job)]
                 job.update({'next_due':stamp+interval,'successes':job['successes']+1,'failures':0,'last_status':'ready','last_success':stamp});self.last_error=None;self.durations.append(time.monotonic()-started);self.durations=self.durations[-50:]
@@ -287,6 +325,7 @@ class Ingestor:
             with self.mutex:self.active=None;self.persist()
             self.browser_lock.release()
             deadline.reset(budget)
+            cancellation.reset(cancel_token)
     def run(self):
         while not self.stop.is_set():
             self.tick()

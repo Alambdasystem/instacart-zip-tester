@@ -1,6 +1,7 @@
 from deadline import check, bounded_seconds, DeadlineExceeded
 from telemetry import emit
 from provider_registry import CAPABILITIES
+from provider_session import status as session_status
 import contextvars
 from location_context import current_location, has_precise_location
 """Provider-isolated comparison, cache, bounded read budget, and sanitized activity."""
@@ -8,6 +9,7 @@ import json, os, threading, time, uuid
 from concurrent.futures import ThreadPoolExecutor
 from connector import ConnectorError, matches_query
 from search_cache import SearchCache
+from search_service import SearchService
 import satsuma_provider as satsuma
 import vercel_provider as vercel
 
@@ -76,7 +78,7 @@ class Comparison:
             rows=db.execute('SELECT at,provider,zip,outcome,http_status,item_count,cache_hit FROM provider_activity ORDER BY at DESC LIMIT 50').fetchall()
             used=db.execute('SELECT COUNT(*) FROM provider_calls').fetchone()[0]
             vused=db.execute('SELECT COUNT(*) FROM vercel_calls').fetchone()[0]
-        return {'capabilities':CAPABILITIES,'vercel_proxy':{'configured':bool(os.getenv('VERCEL_MEALME_API_KEY')),'base_url':vercel.BASE_URL,
+        return {'instacart_session':session_status(),'capabilities':CAPABILITIES,'vercel_proxy':{'configured':bool(os.getenv('VERCEL_MEALME_API_KEY')),'base_url':vercel.BASE_URL,
                 'read_budget':max(0,min(100,int(os.getenv('VERCEL_MEALME_READ_BUDGET','0')))),
                 'attempts_in_database':vused,'background_ingestion':False,'live_contract_verified':False,'documented_routes_verified':True},'satsuma_configured':bool(os.getenv('SATSUMA_API_KEY')),'satsuma_base_url':satsuma.BASE_URL,
                 'satsuma_background_ingestion':False,'read_attempts_in_database':used,
@@ -102,30 +104,17 @@ class Comparison:
                 lock=self.browser_lock if provider=='instacart' else self.vlocks[provider] if provider in vercel.PROVIDERS else self.slock
                 for q in queries:
                     check()
-                    key=cache.key(z,[q],store,allow)
-                    entry=None if mode=='refresh' else cache.get(key)
-                    if entry:
-                        payload,meta=entry;cache_hits.append(True)
-                    else:
-                        if mode=='cache_only':continue
-                        if time.monotonic()-start>90:
-                            raise satsuma.ProviderError('request_budget_exceeded','Search time budget reached. Retry missing queries separately.')
-                        if not lock.acquire(timeout=bounded_seconds(15)):raise satsuma.ProviderError('busy','Provider already has a request in progress. Retry shortly.')
-                        try:
-                            entry=None if mode=='refresh' else cache.get(key)
-                            if entry:payload,meta=entry;cache_hits.append(True)
-                            else:
-                                if provider=='instacart':
-                                    if os.getenv('CONNECTOR_ENABLED','false').lower()!='true':raise satsuma.ProviderError('not_configured','Instacart browser connector is disabled.')
-                                    payload=self.fetch_instacart(z,[q],store,allow)
-                                    payload['provider']='instacart'
-                                    payload['items']=[{**p,'provider':'instacart'} for p in payload['items']]
-                                elif provider in vercel.PROVIDERS:payload=vercel.search(z,[q],provider,self.vercel_request)
-                                else:payload=satsuma.search(z,[q],self.request)
-                                payload.setdefault('retrieved_at',time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()))
-                                meta=({'age_seconds':0,'expires_in':300} if payload.get('error') else cache.put(key,payload));cache_hits.append(False)
-                                self.catalog.ingest(z,q,payload,meta['expires_in'])
-                        finally:lock.release()
+                    def fetch(z,qs,retailer,flag):
+                        if provider=='instacart':
+                            if os.getenv('CONNECTOR_ENABLED','false').lower()!='true':raise satsuma.ProviderError('not_configured','Instacart browser connector is disabled.')
+                            value=self.fetch_instacart(z,qs,retailer,flag);value['provider']='instacart'
+                            value['items']=[{**p,'provider':'instacart'} for p in value['items']]
+                            return value
+                        if provider in vercel.PROVIDERS:return vercel.search(z,qs,provider,self.vercel_request)
+                        return satsuma.search(z,qs,self.request)
+                    entries,hits,fetched,missing=SearchService(self.catalog,cache,lock,fetch,provider).resolve(z,[q],store,allow,mode)
+                    if not entries:continue
+                    payload,meta=entries[0];cache_hits.append(bool(hits))
                     location=payload['location'];warnings.extend(payload.get('warnings',[]))
                     if payload.get('error'):error=payload['error'];upstream=error.get('http_status')
                     found_retailers.update({r['id']:r for r in payload.get('retailers',[])})

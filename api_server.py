@@ -1,3 +1,5 @@
+from search_jobs import SearchJobs, JobError
+import cancellation
 from operator_access import ensure_credential
 import hmac
 import deadline
@@ -14,7 +16,8 @@ from provider_comparison import Comparison
 from search_cache import SearchCache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from connector import ConnectorError, search_browser
+from connector import ConnectorError
+from isolated_runner import search_browser, stop_all
 
 ROOT = Path(__file__).parent
 LOCK = PriorityLock()
@@ -26,6 +29,8 @@ CATALOG = Catalog(os.getenv('CATALOG_PATH',str(Path(os.getenv('RENDER_DISK_MOUNT
 CACHE.attach(CATALOG,'instacart')
 OPERATOR_KEY=ensure_credential(CATALOG.path)
 INGESTOR = None
+JOBS=SearchJobs()
+RATE_LOCK=threading.Lock()
 COMPARISON = Comparison(CATALOG,CACHE,LOCK,lambda *a: search_browser(*a))
 
 def validate(data):
@@ -45,17 +50,8 @@ def validate(data):
 
 SPEC = json.loads((ROOT/'openapi.json').read_text())
 
-def merge_parts(parts, hit_queries, fetched_queries):
-    payloads=[p for p,m in parts];metas=[m for p,m in parts]
-    products={item['id']:item for payload in payloads for item in payload['items']}
-    observed={p['location'].get('observed_zip') for p in payloads}
-    location=dict(payloads[0]['location'])
-    location['verified']=all(p['location']['verified'] for p in payloads)
-    location['observed_zip']=observed.pop() if len(observed)==1 else None
-    retailer_rows={r['id']:dict(r) for p in payloads for r in p.get('retailers',[])}
-    for r in retailer_rows.values():r['products_returned']=sum(i.get('retailer')==r['id'] for i in products.values())
-    meta={'hit':not fetched_queries,'partial_hit':bool(hit_queries and fetched_queries),'hit_queries':hit_queries,'fetched_queries':fetched_queries,'age_seconds':max(m['age_seconds'] for m in metas),'expires_in':min(m['expires_in'] for m in metas),'ttl_seconds':300,'sources':sorted({m.get('source','memory_cache' if m.get('hit') else 'live') for m in metas})}
-    return {'items':list(products.values()),'location':location,'warnings':list(dict.fromkeys(w for p in payloads for w in p.get('warnings',[]))),'retrieved_at':min(p.get('retrieved_at','') for p in payloads),'retailers':list(retailer_rows.values()),'diagnostics':[d for p in payloads for d in p.get('diagnostics',[])]},meta
+from search_service import SearchService, merge_parts
+SEARCH=SearchService(CATALOG,CACHE,LOCK,lambda *args:search_browser(*args))
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
@@ -73,6 +69,10 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError,ConnectionResetError):emit('client_disconnected',status='response_abandoned')
     def do_GET(self):
         route=urlsplit(self.path)
+        if route.path.startswith('/api/v1/search/jobs/'):
+            key=route.path.rsplit('/',1)[-1]
+            try:return self.send(200,JOBS.get(key,self.headers.get('Authorization','').removeprefix('Bearer ')))
+            except JobError as e:return self.send(e.http,{'error':e.code,'message':e.message})
         if route.path=='/api/v1/providers/status':return self.send(200,COMPARISON.status())
         if route.path=='/api/v1/ingestion/status':
             params=parse_qs(route.query)
@@ -101,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
                 with CATALOG.db() as db:db.execute('SELECT 1').fetchone()
                 return self.send(200,{'status':'ready','storage_available':Path(CATALOG.path).exists(),'persistent_mount_configured':bool(os.getenv('RENDER_DISK_MOUNT_PATH'))})
             except Exception:return self.send(503,{'status':'not_ready','message':'Catalog storage unavailable'})
-        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.5.1'})
+        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.6.0'})
         if self.path=='/openapi.json': return self.send(200,SPEC)
         if route.path in ('/docs','/swagger','/android-contract.md','/instasearch-contract.md'):
             filename='android-contract.md' if route.path in ('/android-contract.md','/instasearch-contract.md') else 'swagger.html'
@@ -114,6 +114,31 @@ class Handler(BaseHTTPRequestHandler):
             if not 0<size<=10000: raise ValueError('Request body must be 1–10000 bytes.')
             data=json.loads(self.rfile.read(size))
             if not isinstance(data,dict): raise ValueError('Expected a JSON object.')
+            if self.path.startswith('/api/v1/search/jobs/') and self.path.endswith('/cancel'):
+                key=self.path.split('/')[-2]
+                if data!={}:raise ValueError('Cancellation body must be empty.')
+                try:return self.send(200,JOBS.cancel(key,self.headers.get('Authorization','').removeprefix('Bearer ')))
+                except JobError as e:return self.send(e.http,{'error':e.code,'message':e.message})
+            if self.path=='/api/v1/search/jobs':
+                z,qs,store,flag=validate(data)
+                if data.get('mode','auto') not in ('auto','refresh','cache_only'):raise ValueError('Invalid cancellable search mode.')
+                if os.getenv('CONNECTOR_ENABLED','false').lower()!='true':return self.send(503,{'error':'connector_disabled'})
+                client=hashlib.sha256(self.client_address[0].encode()).hexdigest();now=time.time()
+                with RATE_LOCK:
+                    RATE[client]=[t for t in RATE.get(client,[]) if now-t<60]
+                    if len(RATE[client])>=3:return self.send(429,{'error':'rate_limited','message':'Three live search requests per minute.'})
+                    RATE[client].append(now)
+                def work():
+                    parts,hits,fetched,missing=SEARCH.resolve(z,qs,store,flag,data.get('mode','auto'))
+                    if not parts:
+                        if data.get('mode','auto')!='cache_only':raise ConnectorError('no_results','No priced products were returned.')
+                        return {'status':'cache_miss','items':[],'missing_queries':missing,'location':{'requested_zip':z,'verified':False},'cache':{'hit':False,'age_seconds':0,'expires_in':0,'sources':[]}}
+                    value,meta=merge_parts(parts,hits,fetched);deadline.check();sid=str(uuid.uuid4())
+                    value.update(search_id=sid,status='partial' if missing else 'ok',missing_queries=missing,cache=meta,expires_in=meta['expires_in'],cart_updated=False)
+                    RESULTS[sid]={'created':time.time(),'expires':time.time()+meta['expires_in'],'payload':value}
+                    return value
+                try:return self.send(202,JOBS.submit(work))
+                except JobError as e:return self.send(e.http,{'error':e.code,'message':e.message})
             if self.path=='/api/v1/ingestion/recover':
                 supplied=self.headers.get('Authorization','')
                 if not hmac.compare_digest(supplied,'Bearer '+OPERATOR_KEY):return self.send(403,{'error':'operator_required','message':'Authenticated operator access required.'})
@@ -206,60 +231,27 @@ class Handler(BaseHTTPRequestHandler):
             client=hashlib.sha256(self.client_address[0].encode()).hexdigest()
             RATE[client]=[t for t in RATE.get(client,[]) if now-t<60]
             mode=data.get('mode','auto')
-            parts=[];missing=[];hit_queries=[]
-            for q in qs:
-                entry=None if mode=='refresh' else CACHE.get(CACHE.key(z,[q],store,flag))
-                if entry: parts.append(entry);hit_queries.append(q)
-                else: missing.append(q)
-            if not missing:
-                payload,meta=merge_parts(parts,hit_queries,[])
-                sid=str(uuid.uuid4());payload.update({'search_id':sid,'cache':meta,'expires_in':meta['expires_in'],'cart_updated':False,'status':'ok'})
-                RESULTS[sid]={'created':now,'expires':now+meta['expires_in'],'payload':payload}
-                return self.send(200,payload)
-            if missing and mode=='cache_only':
-                if parts:
-                    payload,meta=merge_parts(parts,hit_queries,[]);meta.update({'hit':False,'partial_hit':True})
-                    sid=str(uuid.uuid4());payload.update({'search_id':sid,'status':'partial','missing_queries':missing,'cache':meta})
-                    RESULTS[sid]={'created':time.time(),'expires':time.time()+meta['expires_in'],'payload':payload}
-                    return self.send(200,payload)
-                return self.send(200,{'status':'cache_miss','items':[],'missing_queries':missing,'location':{'requested_zip':z,'verified':False},'cache':{'hit':False,'sources':[]}})
-            if len(RATE[client])>=3:return self.send(429,{'error':'rate_limited','message':'Limit: three live searches per minute.'})
-            queued_at=time.monotonic()
-            if not LOCK.acquire(timeout=deadline.bounded_seconds(15)): return self.send(429,{'error':'busy','message':'One browser search is running. Retry shortly.'})
-            emit('browser_queue',provider='instacart',duration_ms=round((time.monotonic()-queued_at)*1000))
-            RATE[client].append(now)
+            def before_live():
+                if len(RATE[client])>=3:raise ConnectorError('rate_limited','Limit: three live searches per minute.')
+                RATE[client].append(now)
             try:
-                # A waiting caller can reuse work completed by the previous owner.
-                if mode!='refresh':
-                    for q in list(missing):
-                        entry=CACHE.get(CACHE.key(z,[q],store,flag))
-                        if entry:parts.append(entry);hit_queries.append(q);missing.remove(q)
-                fresh=search_browser(z,missing,store,flag) if missing else {'items':[]}
-
-                parts=[entry for q in hit_queries if (entry:=CACHE.get(CACHE.key(z,[q],store,flag))) is not None]
-                fresh['retrieved_at']=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
-                for q in missing:
-                    normalized=' '.join(q.casefold().split())
-                    subset={**fresh,'items':[i for i in fresh['items'] if ' '.join(i.get('query','').casefold().split())==normalized]}
-                    if subset['items']:
-                        meta=CACHE.put(CACHE.key(z,[q],store,flag),subset)
-                        CATALOG.ingest(z,q,subset,meta['expires_in'])
-                        # Foreground demand is registered once above; refresh does not increment it.
-                        parts.append((subset,meta))
-                if not parts: raise ConnectorError('no_results','No priced products were returned.')
-                payload,meta=merge_parts(parts,hit_queries,missing)
-                covered={ ' '.join(i.get('query','').casefold().split()) for i in payload['items']}
-                unresolved=[q for q in qs if ' '.join(q.casefold().split()) not in covered]
-                search_id=str(uuid.uuid4());payload.update({'missing_queries':unresolved,'search_id':search_id,'status':'partial' if unresolved else 'ok','expires_in':meta['expires_in'],'cache':meta,'cart_updated':False})
-                RESULTS[search_id]={'created':now,'expires':time.time()+meta['expires_in'],'payload':payload}
+                parts,hits,fetched,missing=SEARCH.resolve(z,qs,store,flag,mode,before_live)
+                if not parts:
+                    if mode!='cache_only':raise ConnectorError('no_results','No priced products were returned.')
+                    return self.send(200,{'status':'cache_miss','items':[],'missing_queries':missing,'location':{'requested_zip':z,'verified':False},'cache':{'hit':False,'age_seconds':0,'expires_in':0,'sources':[]}})
+                payload,meta=merge_parts(parts,hits,fetched)
+                if missing:meta.update(hit=False,partial_hit=True)
+                sid=str(uuid.uuid4());payload.update(search_id=sid,status='partial' if missing else 'ok',missing_queries=missing,cache=meta,expires_in=meta['expires_in'],cart_updated=False)
+                RESULTS[sid]={'created':time.time(),'expires':time.time()+meta['expires_in'],'payload':payload}
                 return self.send(200,payload)
             except ConnectorError as e:
                 emit('search_failed',provider='instacart',status=e.status)
-                return self.send(422 if e.status in ('location_required','location_unsupported') else 502,{'status':e.status,'message':e.message,'items':[],'location':{'requested_zip':z,'verified':False}})
+                code=429 if e.status in ('busy','rate_limited') else 422 if e.status in ('location_required','location_unsupported') else 409 if e.status=='cancelled' else 502
+                return self.send(code,{'status':e.status,'error':e.status,'message':e.message,'items':[],'location':{'requested_zip':z,'verified':False}})
             except Exception as e:
                 emit('search_failed',provider='instacart',error_type=type(e).__name__)
                 return self.send(502,{'status':'connector_error','message':'The browser connector failed. No product results were substituted.','items':[]})
-            finally: LOCK.release()
+        except cancellation.CancelledError:return self.send(409,{'status':'cancelled','message':'Search cancelled.'})
         except (ValueError,TypeError): return self.send(422,{'error':'invalid_request','message':'Use a five-digit zip and 1–3 food queries. See /openapi.json.'})
 
 if __name__=='__main__':
@@ -270,6 +262,7 @@ if __name__=='__main__':
     import signal
     def stop_service(*args):
         if INGESTOR:INGESTOR.stop.set()
+        JOBS.stop();stop_all()
         threading.Thread(target=server.shutdown,daemon=True).start()
     signal.signal(signal.SIGTERM,stop_service)
     try:server.serve_forever()

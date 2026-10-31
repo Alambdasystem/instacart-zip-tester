@@ -1,4 +1,5 @@
 """Thread-safe, bounded, non-sliding search cache with store-wide expiry."""
+from provider_session import cache_scope as session_scope
 from copy import deepcopy
 import threading, time, json
 from location_context import current_location, context_id
@@ -22,7 +23,7 @@ class SearchCache:
                 db.execute("DELETE FROM search_snapshots WHERE expires<=?",(self.clock(),))
                 db.execute('DELETE FROM search_snapshots WHERE namespace=? AND key NOT IN (SELECT key FROM search_snapshots WHERE namespace=? ORDER BY expires DESC LIMIT ?)',(self.namespace,self.namespace,self.max_entries))
     def key(self, zip_code, queries, retailer, allow_unverified):
-        return (zip_code, tuple(sorted(set(' '.join(q.casefold().split()) for q in queries))), retailer or '*', allow_unverified, 'v05.0:'+context_id(current_location(zip_code)))
+        return (zip_code, tuple(sorted(set(' '.join(q.casefold().split()) for q in queries))), retailer or '*', allow_unverified, 'v06.0:'+context_id(current_location(zip_code))+(':'+session_scope() if self.namespace=='instacart' else ''))
     def _prune(self):
         now=self.clock()
         expired_groups={g for g,expires in self.groups.items() if expires<=now}

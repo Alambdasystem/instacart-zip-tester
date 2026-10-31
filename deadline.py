@@ -1,5 +1,6 @@
 """One monotonic time budget, shared through copied request contexts."""
 import contextvars,time
+import cancellation
 _END=contextvars.ContextVar('search_deadline',default=None)
 class DeadlineExceeded(TimeoutError):pass
 def begin(seconds=120):return _END.set(time.monotonic()+seconds)
@@ -8,6 +9,7 @@ def remaining():
     end=_END.get()
     return float('inf') if end is None else end-time.monotonic()
 def check():
+    cancellation.check()
     if remaining()<=0:raise DeadlineExceeded('Search deadline exhausted.')
 def bounded_ms(maximum):
     check();return max(1,int(min(maximum,remaining()*1000)))

@@ -4,7 +4,8 @@ from page_state import classify_dialog
 from telemetry import emit
 from location_context import current_location, context_id
 """Bounded public-browser connector. No private API, login, or challenge bypass."""
-import hashlib, re, time
+import hashlib, re, time, os
+from provider_session import load_state, SessionConfigError, scope as session_scope, request_context_id
 from collections import defaultdict, deque
 from urllib.parse import quote, urlparse, parse_qs
 
@@ -43,7 +44,10 @@ def normalize(cards, query, retailer, observed_zip):
         parsed_image=urlparse(image_url or '')
         if parsed_image.scheme!='https' or not (parsed_image.hostname and (parsed_image.hostname.endswith('.instacart.com') or parsed_image.hostname.endswith('.cloudfront.net') or parsed_image.hostname=='instacart.com')):image_url=None
         price_value = float(price.group(1).replace(',', ''))
-        result.append({'id': hashlib.sha256((source_store+'|'+(source_path.split('?')[0] or name+'|'+str(size))).encode()).hexdigest()[:24], 'name': name, 'size': size, 'price': price_value, 'currency': 'USD', 'retailer': source_store, 'query': query, 'observed_zip': observed_zip, 'source': 'instacart_public_browser', 'image_url':image_url, 'url': product_url or 'https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query), 'availability': 'Displayed; not independently verified'})
+        unit=re.search(r'\$(\d+(?:\.\d{2})?)\s*(?:/|per\s+)(lb|oz|fl oz|kg|g|ct)\b',text,re.I)
+        basis='per_lb' if re.search(r'\bper lb\b|/lb\b',name+' '+text,re.I) else 'unspecified'
+        promotion=next((line.strip()[:180] for line in lines if re.search(r'\bsale\b|buy .* get|\bwas \$',line,re.I)),None)
+        result.append({'id': hashlib.sha256((source_store+'|'+(source_path.split('?')[0] or name+'|'+str(size))).encode()).hexdigest()[:24], 'name': name, 'size': size, 'price': price_value, 'currency': 'USD', 'retailer': source_store, 'query': query, 'price_basis':basis,'unit_price':{'amount':float(unit.group(1)),'unit':unit.group(2)} if unit else None,'promotion_text':promotion,'variants_status':'not_exposed','size_status':'displayed' if size else 'not_extracted', 'observed_zip': observed_zip, 'source': 'instacart_public_browser', 'image_url':image_url, 'url': product_url or 'https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query), 'availability': 'Displayed; not independently verified'})
     return balanced_items(result)
 
 def balanced_items(items, per_retailer=None, maximum=500):
@@ -74,7 +78,7 @@ SNAPSHOT_JS = r"""() => {
  const groups=[...(root?.querySelectorAll('[role="group"], [role="button"]')||[])];
  cards=groups.filter(e=>e.querySelector('h3')&&e.innerText.includes('Current price:')).map(e=>({name:e.querySelector('h3').innerText,text:e.innerText,image_url:e.querySelector('img')?.currentSrc||e.querySelector('img')?.getAttribute('src'),url:e.querySelector('a[data-item-card-button]')?.getAttribute('href')}));
  }
- return {retailers,cards,has_next_page:!!root?.querySelector('button[aria-label="Next page"]')};
+ return {retailers,cards,has_next_page:[...(root?.querySelectorAll('button[aria-label="Next page"]')||[])].some(b=>!b.disabled&&b.getAttribute('aria-disabled')!=='true'&&b.getClientRects().length)};
 }"""
 
 
@@ -266,8 +270,16 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
     emit('search_started',provider='instacart',query_count=len(queries))
     with sync_playwright() as p:
         browser=p.chromium.launch(headless=True,timeout=bounded_ms(30000),args=['--disable-dev-shm-usage'])
-        context=browser.new_context(locale='en-US');page=context.new_page();page.set_default_timeout(5000)
+
+        try:session_state=load_state()
+        except SessionConfigError as e:
+            browser.close();raise ConnectorError('session_configuration_invalid',str(e))
+        context=browser.new_context(locale='en-US',**({'storage_state':session_state} if session_state is not None else {}));page=context.new_page();page.set_default_timeout(5000)
         page.route('**/*',lambda route:route.abort() if route.request.resource_type in ('image','media','font') else route.continue_())
+        def finish():
+            for r in retailers.values():r['products_returned']=sum(i['retailer']==r['id'] for i in items)
+            observed_values={o for o,v in locations}
+            return {'items':items,'location':{'requested_zip':zip_code,'observed_zip':next(iter(observed_values)) if len(observed_values)==1 else None,'verified':all(v for o,v in locations),'context_id':request_context_id(current_location(zip_code)),'address_selected':bool(current_location(zip_code).get('address')) and all(v for o,v in locations),'verification_method':'active_address_control','verification_scope':'zip_only','delivery_serviceability_verified':False,'store_branch_verified':False,'provider_context':{'requested_context_id':request_context_id(current_location(zip_code)),'observed_zip':next(iter(observed_values)) if len(observed_values)==1 else None,'acknowledgment':'active_address_control' if all(v for o,v in locations) else 'unverified','store_branch_id':None,'delivery_serviceability_verified':False,'authorized_state_configured':session_state is not None}},'direct_local_supported':False,'coverage_complete':False,'coverage_scope':{'kind':'visible_shelves','retailer':retailer or '*','limit':500},'retailers':list(retailers.values()),'diagnostics':diagnostics,'warnings':list(dict.fromkeys(warnings))}
         stage='opening provider search'
         try:
             for query in queries:
@@ -306,6 +318,9 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                     page.wait_for_timeout(bounded_ms(500))
                 state,settled=wait_for_catalog(page,retailer)
                 emit('search_stage_complete',provider='instacart',stage=stage,duration_ms=round((time.monotonic()-phase_started)*1000))
+                from pagination import expand
+                page_limit=max(0,min(12,int(os.getenv('INSTACART_PAGE_ACTION_LIMIT','4'))))
+                state,paging=expand(page,state,SNAPSHOT_JS,lambda pg,timeout:wait_for_catalog(pg,retailer,timeout),observed_location,zip_code,allow_unverified,query,page_limit)
                 # Recheck after hydration/search; never carry verification from a previous query.
                 observed=observed_location(page);verified=verified and observed==zip_code
                 if not verified and not allow_unverified:
@@ -316,19 +331,27 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                     if navigation:html_audit=audit_html(navigation.text())
                 except Exception:html_audit={'audit_unavailable':True}
                 normalized=normalize(state['cards'],query,retailer,observed)
+                observed_offers={};conflicts=set()
+                for item in normalized:
+                    previous=observed_offers.get(item['id'])
+                    if previous and (previous.get('price'),previous.get('size'))!=(item.get('price'),item.get('size')):conflicts.add(item['id'])
+                    observed_offers[item['id']]=item
+                normalized=[item for key,item in observed_offers.items() if key not in conflicts]
+                if conflicts:warnings.append(str(len(conflicts))+' conflicting offer observations omitted; refresh before selection.')
                 # Explicit retailer requests must not silently return another retailer.
                 if retailer:normalized=[item for item in normalized if item['retailer']==retailer]
                 items.extend(normalized);locations.append((observed,verified))
                 for r in discovered_retailers(state,normalized):retailers[r['id']]=r
-                diagnostics.append({'query':query,'stage_counts':{'initial_html':html_audit,'initial_dom_cards':initial_cards,'address_selected_dom_cards':address_cards,'collected_cards':len(state['cards'])},'cards_seen':len(state['cards']),'products_returned':len(normalized),'retailers_with_products':len({i['retailer'] for i in normalized}),'settled':settled,'collection_limit':500,'pagination_available':bool(state.get('has_next_page')),'page_url':page.url,'observed_zip':observed})
+                diagnostics.append({'query':query,'conflicting_offers_omitted':len(conflicts),'pagination':paging,'stage_counts':{'initial_html':html_audit,'initial_dom_cards':initial_cards,'address_selected_dom_cards':address_cards,'collected_cards':len(state['cards'])},'cards_seen':len(state['cards']),'products_returned':len(normalized),'retailers_with_products':len({i['retailer'] for i in normalized}),'settled':settled,'collection_limit':500,'pagination_available':bool(state.get('has_next_page')),'pagination_scope':'visible_navigation_and_shelf_carousels','page_url':page.url,'observed_zip':observed})
                 if len(normalized)>=500 or state.get('has_next_page'):warnings.append('Results cover the current visible page; additional provider pages may exist. No retailer allowlist is applied.')
                 if not settled:warnings.append('Visible catalog did not fully stabilize before the time limit; coverage may be partial.')
                 if not verified:warnings.append('Requested ZIP '+zip_code+' is unverified; results belong to the provider context, not confirmed neighborhood inventory.')
             if not items:raise ConnectorError('no_results','No readable products matched the selected retailer. This is not proof of no stock.')
-            for r in retailers.values():r['products_returned']=sum(i['retailer']==r['id'] for i in items)
-            observed_values={o for o,v in locations}
-            return {'items':items,'location':{'requested_zip':zip_code,'observed_zip':next(iter(observed_values)) if len(observed_values)==1 else None,'verified':all(v for o,v in locations),'context_id':context_id(current_location(zip_code)),'address_selected':bool(current_location(zip_code).get('address')) and all(v for o,v in locations),'verification_method':'active_address_control','verification_scope':'zip_only','delivery_serviceability_verified':False,'store_branch_verified':False},'direct_local_supported':False,'coverage_complete':False,'coverage_scope':{'kind':'visible_shelves','retailer':retailer or '*','limit':500},'retailers':list(retailers.values()),'diagnostics':diagnostics,'warnings':list(dict.fromkeys(warnings))}
+            return finish()
         except (BrowserTimeout,DeadlineExceeded):
+            if items:
+                warnings.append('Browser time budget reached; only completed queries are returned. Retry missing queries separately.')
+                return finish()
             emit('search_failed',provider='instacart',stage=stage,status='provider_timeout',duration_ms=round((time.monotonic()-started)*1000))
             raise ConnectorError('provider_timeout','Instacart timed out while '+stage+'.')
         except ConnectorError as e:

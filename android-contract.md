@@ -100,3 +100,18 @@ A login-required ingestion attempt suspends its ZIP + retailer discovery context
 Ingestion status includes `blocked_contexts`, `blocked_jobs`, `eligible_jobs` and `work_state` (`scheduled`, `fetching`, `no_eligible_jobs`, `provider_paused`, `stopped`). `running` does not mean every queued job or price is fresh. Operator recovery probes one suspended context's original query and clears only that suspension on success.
 
 For local basket handoff, use each selected item's HTTPS `url`. The tester labels these links **Open on Instacart**. No provider basket transfer or checkout session is created; the customer continues on the provider website.
+
+
+### v0.6 cancellable browser search
+
+`POST /api/v1/search/jobs` accepts the standard Instacart SearchRequest and returns HTTP 202 with `job_id`, `job_token`, `status=queued`, and `expires_in`. Keep the token in memory. Send `Authorization: Bearer <job_token>` to `GET /api/v1/search/jobs/{id}` and `POST /api/v1/search/jobs/{id}/cancel` with `{}`. Tokens are never placed in URLs. Invalid tokens return 403. Jobs are retained for ten minutes; at most two active and 32 retained jobs are allowed.
+
+Poll status: queued, running, succeeded, failed or cancelled. On succeeded, `result` is the standard search response including `search_id`, so normal selection/cart endpoints apply. On failed/cancelled inspect `error.code` and `error.message`. Cancellation is acknowledged only when terminal status is cancelled. Browser execution is isolated in a child process with a shared deadline; cancellation terminates and reaps its running process tree on Linux. The regular synchronous search API remains supported. A client disconnect alone is not an acknowledged cancellation; clients should call the cancel endpoint. The tester attempts cancellation when leaving the page.
+
+Location responses now carry `provider_context` with request context identity, observed ZIP, acknowledgment, nullable store branch ID, delivery verification and authorized-state configuration. A configured session is not proof of authenticated access or local delivery. Anonymous HTTP remains discovery-only.
+
+Optional authorized provider state: operator supplies `INSTACART_STORAGE_STATE_PATH` pointing to a private owner-readable 0600/0400 Instacart-only Playwright state file. No public endpoint accepts session cookies or credentials. Session changes isolate exact caches and address-specific offers. No session is created by this release. Invalid configuration is reported explicitly. See https://playwright.dev/python/docs/auth .
+
+Pagination follows visible retailer carousel / navigation Next page controls, with four actions by default (`INSTACART_PAGE_ACTION_LIMIT`, bounded 0–12), 500 cards and the request deadline. Diagnostics report actions, new-card counts and stopping reason. These bounded observations do not establish complete inventory. Product fields add `price_basis`, nullable `unit_price`, `promotion_text`, `size_status` and `variants_status`; absent variants remain not_exposed.
+
+Storage v6 keeps normalized product, offer, context and scheduler-job tables with an additive native backup before migration. Legacy rows/snapshots are retained for rollback. API, comparisons and ingestion use the shared search resolver. Hard process cancellation is Linux-specific.

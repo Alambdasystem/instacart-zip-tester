@@ -12,7 +12,7 @@ class MiddlewareTests(unittest.TestCase):
         threading.Thread(target=cls.server.serve_forever,daemon=True).start()
         cls.url='http://127.0.0.1:'+str(cls.server.server_port)
     @classmethod
-    def tearDownClass(cls): cls.server.shutdown()
+    def tearDownClass(cls): cls.server.shutdown();cls.server.server_close()
     def post(self,path,body):
         try:r=urlopen(Request(self.url+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json'}))
         except HTTPError as e:r=e

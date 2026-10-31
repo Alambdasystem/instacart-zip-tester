@@ -72,3 +72,15 @@ Live v0.5.1 acceptance: old circuit reconstructed as Schnucks / 63129 and only t
 
 Follow-up prevents new demand from immediately refetching an exact background snapshot with more than 60 seconds remaining; original TTL remains unchanged and the job is scheduled for the final-minute refresh window. Invalidation still permits fetch; cache read failure defers provider work safely. Cache deferrals do not consume upstream attempt budget.
 Rollback note: older worker code ignores blocked_contexts. Preserve suspensions or stop ingestion before rolling back to a version without isolation support.
+
+
+## v0.6 normalized storage, shared resolution and cancellable search
+
+- Shared SearchService now resolves exact cache/live misses for the search API, provider comparison and background ingestion. Cache entries are rechecked after waits so an offer that expires during another fetch cannot mint a renewed quote; still-fresh cached subsets survive an upstream miss with explicit partial_errors.
+- Additive normalized offer_products, offer_contexts, offers and ingestion_jobs are authoritative, with legacy compatibility snapshots retained. Actual provider branch IDs partition offers when supplied. Native pre-v06 backup precedes migration. A 2,000-offer/1,000-job rehearsal passed foreign-key checks, SQLite integrity and restoration to the previous reader.
+- Browser reads run in an isolated child process with a hard parent deadline, cancellation-aware queue waits and Linux process-tree termination/reaping. SIGTERM stops active browser work. Explicit per-job capability tokens protect progress/cancel endpoints; the frontend offers Start cancellable search and Cancel running search. A client disconnect alone is not an acknowledged cancel.
+- Visible navigation/carousel pagination is bounded by action count, 500 cards and time. Context drift stops strict reads; conflicting observations are omitted. Weight/unit/promotion/size/variant visibility are explicit, not fabricated.
+- Optional private Instacart-only authorized state file can be configured by an operator; session changes isolate caches and precise-context offers. No authorized session is supplied or verified by this code change. Provider context evidence remains separate from requested ZIP and actual branch/delivery claims.
+- Diagnostic panels are bounded in the frontend. Contract/OpenAPI include job and provider-context models. Read-only performance_probe.py supports a bounded live soak without provider calls.
+
+135 tests pass before final deployment checks. Production address, pagination, actual browser cancellation, normalized migration and soak evidence must be recorded separately. Provider-authenticated restricted reads and actual branch/delivery data cannot be manufactured from anonymous HTML.

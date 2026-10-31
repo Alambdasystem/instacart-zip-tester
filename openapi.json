@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "InstaSearch API Contract",
-    "version": "0.4.0",
-    "description": "Experimental integration contract. Current provider: Instacart public-browser connector. No authentication on this prototype. Use only test traffic. Cart validation does not update Instacart or place an order. Location and prices must be checked independently. Search snapshots expire within five minutes and can disappear on restart. Retailer discovery reflects visible provider context. ZIP confirmation is not store-branch or delivery verification."
+    "version": "0.6.0",
+    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. Local baskets and provider links do not transfer items or place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels."
   },
   "servers": [
     {
@@ -696,6 +696,127 @@
           }
         }
       }
+    },
+    "/api/v1/search/jobs": {
+      "post": {
+        "summary": "Start a cancellable Instacart browser search",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              },
+              "example": {
+                "zip": "63129",
+                "queries": [
+                  "milk",
+                  "eggs"
+                ],
+                "retailer": "",
+                "allow_unverified_location": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Job accepted; includes job_id, job_token, status and expires_in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchJobAccepted"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Capacity or rate limit"
+          }
+        }
+      }
+    },
+    "/api/v1/search/jobs/{id}": {
+      "get": {
+        "summary": "Read search job status and result",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "SearchJobToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job status, result and typed error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchJobStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Invalid or expired job token"
+          }
+        }
+      }
+    },
+    "/api/v1/search/jobs/{id}/cancel": {
+      "post": {
+        "summary": "Cancel a search job and stop browser work",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "SearchJobToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job status, result and typed error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchJobStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Invalid or expired job token"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false
+              },
+              "example": {}
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -776,6 +897,51 @@
           },
           "selectable": {
             "type": "boolean"
+          },
+          "price_basis": {
+            "type": "string",
+            "enum": [
+              "per_lb",
+              "unspecified"
+            ]
+          },
+          "size_status": {
+            "type": "string",
+            "enum": [
+              "displayed",
+              "not_extracted"
+            ]
+          },
+          "variants_status": {
+            "type": "string",
+            "enum": [
+              "not_exposed"
+            ]
+          },
+          "promotion_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit_price": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "amount": {
+                "type": "number",
+                "minimum": 0
+              },
+              "unit": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "amount",
+              "unit"
+            ]
           }
         },
         "required": [
@@ -821,6 +987,9 @@
           },
           "store_branch_verified": {
             "type": "boolean"
+          },
+          "provider_context": {
+            "$ref": "#/components/schemas/ProviderContext"
           }
         },
         "required": [
@@ -1669,6 +1838,164 @@
         ],
         "description": "Provide query or queries. If both are present, queries takes precedence.",
         "additionalProperties": false
+      },
+      "ProviderContext": {
+        "type": "object",
+        "properties": {
+          "requested_context_id": {
+            "type": "string"
+          },
+          "observed_zip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "acknowledgment": {
+            "type": "string"
+          },
+          "store_branch_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "delivery_serviceability_verified": {
+            "type": "boolean"
+          },
+          "authorized_state_configured": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SearchJobAccepted": {
+        "type": "object",
+        "required": [
+          "job_id",
+          "job_token",
+          "status",
+          "expires_in"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "job_token": {
+            "type": "string",
+            "description": "Opaque short-lived capability. Keep in memory; send only as Authorization bearer header."
+          },
+          "status": {
+            "const": "queued"
+          },
+          "expires_in": {
+            "type": "integer"
+          }
+        }
+      },
+      "SearchJobStatus": {
+        "type": "object",
+        "required": [
+          "job_id",
+          "status",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "expires_in",
+          "cancel_requested",
+          "result",
+          "error"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "created_at": {
+            "type": "number"
+          },
+          "started_at": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "expires_in": {
+            "type": "integer"
+          },
+          "cancel_requested": {
+            "type": "boolean"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SearchResponse"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "status",
+                  "items",
+                  "missing_queries",
+                  "location",
+                  "cache"
+                ],
+                "properties": {
+                  "status": {
+                    "const": "cache_miss"
+                  },
+                  "items": {
+                    "type": "array",
+                    "maxItems": 0
+                  },
+                  "missing_queries": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "location": {
+                    "$ref": "#/components/schemas/Location"
+                  },
+                  "cache": {
+                    "$ref": "#/components/schemas/Cache"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        }
       }
     },
     "securitySchemes": {
@@ -1676,6 +2003,11 @@
         "type": "http",
         "scheme": "bearer",
         "description": "Server-local operator credential, never exposed in the public frontend."
+      },
+      "SearchJobToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Short-lived job capability returned only by job creation."
       }
     }
   }
