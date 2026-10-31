@@ -146,6 +146,11 @@ class AsyncApiTests(unittest.TestCase):
         schema={**self.api.SPEC['components']['schemas']['SearchJobStatus'],'components':self.api.SPEC['components']}
         jsonschema.Draft202012Validator(schema).validate(job)
 
+    def test_async_provider_selector_is_rejected_without_rerouting(self):
+        with patch.dict(os.environ,{'CONNECTOR_ENABLED':'true'}),patch.object(self.api,'search_browser') as fetch:
+            code,value=self.request('/api/v1/search/jobs',{'zip':'63129','query':'milk','providers':['vercel_square']})
+        self.assertEqual(code,422);self.assertEqual(value['error'],'invalid_provider');fetch.assert_not_called()
+
 class ResolverFreshnessTests(unittest.TestCase):
     def setUp(self):set_location({'postal_code':'63129','country_code':'US'})
     def tearDown(self):set_location(None)
@@ -165,6 +170,16 @@ class ResolverFreshnessTests(unittest.TestCase):
         parts,hits,fetched,missing=SearchService(Mock(),cache,threading.Lock(),fetch).resolve('63129',['milk','eggs'],'',True)
         value,meta=merge_parts(parts,hits,fetched)
         self.assertEqual(missing,['eggs']);self.assertEqual(value['partial_errors'][0]['code'],'provider_timeout');self.assertEqual(len(value['items']),1)
+
+    def test_session_rotation_during_fetch_cannot_populate_new_scope(self):
+        from search_service import SearchService
+        state=['ctx:A'];cache=SearchCache()
+        def fetch(*args):
+            state[0]='ctx:B'
+            return {'items':[{'id':'milk','name':'Milk','query':'milk','price':2}],'location':{'verified':True,'context_id':'ctx:A'}}
+        with patch('search_service.request_context_id',side_effect=lambda *a:state[0]):
+            with self.assertRaises(ConnectorError) as caught:SearchService(Mock(),cache,threading.Lock(),fetch).resolve('63129',['milk'],'',False)
+        self.assertEqual(caught.exception.status,'provider_context_changed');self.assertFalse(cache.entries)
 
 class OfferDetailTests(unittest.TestCase):
     def test_weighted_price_and_promotion_are_labeled(self):

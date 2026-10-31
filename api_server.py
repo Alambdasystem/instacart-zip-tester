@@ -120,6 +120,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:return self.send(200,JOBS.cancel(key,self.headers.get('Authorization','').removeprefix('Bearer ')))
                 except JobError as e:return self.send(e.http,{'error':e.code,'message':e.message})
             if self.path=='/api/v1/search/jobs':
+                if 'providers' in data:return self.send(422,{'error':'invalid_provider','message':'Cancellable search supports Instacart only. Use /api/v1/compare for provider selection.'})
                 z,qs,store,flag=validate(data)
                 if data.get('mode','auto') not in ('auto','refresh','cache_only'):raise ValueError('Invalid cancellable search mode.')
                 if os.getenv('CONNECTOR_ENABLED','false').lower()!='true':return self.send(503,{'error':'connector_disabled'})
@@ -134,6 +135,7 @@ class Handler(BaseHTTPRequestHandler):
                         if data.get('mode','auto')!='cache_only':raise ConnectorError('no_results','No priced products were returned.')
                         return {'status':'cache_miss','items':[],'missing_queries':missing,'location':{'requested_zip':z,'verified':False},'cache':{'hit':False,'age_seconds':0,'expires_in':0,'sources':[]}}
                     value,meta=merge_parts(parts,hits,fetched);deadline.check();sid=str(uuid.uuid4())
+                    if missing:meta.update(hit=False,partial_hit=True)
                     value.update(search_id=sid,status='partial' if missing else 'ok',missing_queries=missing,cache=meta,expires_in=meta['expires_in'],cart_updated=False)
                     RESULTS[sid]={'created':time.time(),'expires':time.time()+meta['expires_in'],'payload':value}
                     return value

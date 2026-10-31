@@ -3,6 +3,8 @@ import time
 import deadline
 from connector import ConnectorError
 from telemetry import emit
+from provider_session import request_context_id
+from location_context import current_location
 
 def merge_parts(parts,hit_queries,fetched_queries):
     payloads=[p for p,m in parts];metas=[m for p,m in parts]
@@ -20,12 +22,15 @@ class SearchService:
         self.catalog,self.cache,self.lock,self.fetch,self.provider=catalog,cache,lock,fetch,provider
     def resolve(self,z,queries,store,allow,mode='auto',before_live=None,locked=False):
         entries={};hits=[];missing=[];fetched=[];failure=None
+        def compatible(payload):
+            ctx=payload.get('location',{}).get('context_id')
+            return self.provider!='instacart' or not ctx or ctx==request_context_id(current_location(z))
         def finish():
             parts=[];covered=set()
             for q in queries:
                 if q not in entries:continue
                 entry=entries[q] if entries[q][0].get('error') else self.cache.get(self.cache.key(z,[q],store,allow))
-                if not entry:continue
+                if not entry or not compatible(entry[0]):continue
                 payload,meta=entry
                 meta={**meta,'source':entries[q][1].get('source',meta.get('source','live'))}
                 if failure:payload={**payload,'partial_errors':[failure],'warnings':payload.get('warnings',[])+[failure['message']]}
@@ -34,7 +39,7 @@ class SearchService:
             return parts,[q for q in hits if q in covered],[q for q in fetched if q in covered],[q for q in queries if q not in covered]
         for q in queries:
             deadline.check();entry=None if mode=='refresh' else self.cache.get(self.cache.key(z,[q],store,allow))
-            if entry:entries[q]=entry;hits.append(q)
+            if entry and compatible(entry[0]):entries[q]=entry;hits.append(q)
             else:missing.append(q)
         if not missing or mode=='cache_only':return finish()
         if before_live:before_live()
@@ -47,7 +52,7 @@ class SearchService:
             if mode!='refresh':
                 for q in list(missing):
                     entry=self.cache.get(self.cache.key(z,[q],store,allow))
-                    if entry:entries[q]=entry;hits.append(q);missing.remove(q)
+                    if entry and compatible(entry[0]):entries[q]=entry;hits.append(q);missing.remove(q)
             if missing:
                 try:payload=self.fetch(z,list(missing),store,allow)
                 except (ConnectorError,deadline.DeadlineExceeded) as error:
@@ -55,6 +60,7 @@ class SearchService:
                     failure={'code':getattr(error,'status','provider_timeout'),'message':getattr(error,'message',str(error))}
                     return finish()
                 payload.setdefault('retrieved_at',time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()))
+                if not compatible(payload):raise ConnectorError('provider_context_changed','Provider session/context changed during search. Retry with the current context.')
                 for q in missing:
                     normalized=' '.join(q.casefold().split())
                     subset={**payload,'items':[i for i in payload['items'] if len(missing)==1 or ' '.join(i.get('query','').casefold().split())==normalized]}
