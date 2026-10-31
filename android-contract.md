@@ -1,4 +1,4 @@
-# InstaSearch API Contract v0.2.0
+# InstaSearch API Contract v0.3.0
 
 Base URL: https://alambda-grocery-api.onrender.com/
 Interactive documentation: /docs
@@ -8,7 +8,7 @@ All POST bodies: Content-Type: application/json. UTF-8 JSON responses.
 ## Integration sequence
 
 1. GET /api/v1/catalog?zip=63129&queries=milk&queries=eggs for stored results. Each query parameter is repeated, not comma-joined. Terms match with OR. An empty catalog means no matching observations; it does not establish local unavailability.
-2. POST /api/v1/search if a fresh provider fetch is needed. Send {"zip":"63129","queries":["milk","eggs"],"retailer":"","allow_unverified_location":false}. Maximum 3 terms, 120 characters each; current live retailer filters: empty (all) or aldi. `query` is a single-term alias. `queries` takes precedence.
+2. POST /api/v1/search if a fresh provider fetch is needed. Send {"zip":"63129","queries":["milk","eggs"],"retailer":"","allow_unverified_location":false}. Maximum 3 terms, 120 characters each; live retailer filters: empty (all visible provider-context retailers) or a retailer id returned in retailers. `query` is a single-term alias. `queries` takes precedence.
 3. Render items using id, name, size, price, currency, retailer, image_url and url. IDs are opaque snapshot identifiers, not stable SKU/UPC identifiers. Deduplicate across providers only with an explicit verified mapping, never the name alone.
 4. Persist selected lines on the Android side: search_id + item_id + quantity. Optional POST /api/v1/select validates item_ids within one search; selection_id isn't required for cart validation.
 5. POST /api/v1/cart with {"lines":[{"search_id":"returned-search-id","item_id":"returned-item-id","quantity":2}]}. Maximum 60 distinct (search_id,item_id) lines; quantity is an integer 1–99. Empty lines is supported. The response contains item_count (sum of quantities), items with line_total, subtotal, currency and location_verified. Server totals exclude taxes and fees. No persistent server cart is created; Android owns cart storage and removal.
@@ -43,7 +43,7 @@ Live browser capacity is one concurrent search and three fresh searches per minu
 
 Price freshness is at most 300 seconds, non-sliding. Return cache.hit, partial_hit, hit_queries, fetched_queries, age_seconds and expires_in when present. Re-reading doesn't extend freshness. New ZIP/term payloads can enqueue collector jobs within bounded capacity; enqueue isn't a promise of fresh or geographically verified data. Background refresh only runs while this free service is awake. Catalog and snapshots aren't durable across deployment/restart on the current free setup.
 
-POST /api/v1/cache/invalidate is an operator action, not a normal Android search step. It accepts retailer=aldi or * plus optional ZIP and expires related price snapshots. GET /api/v1/ingestion/status and /api/v1/catalog/export are diagnostics.
+POST /api/v1/cache/invalidate is an operator action, not a normal Android search step. It accepts a retailer slug or * plus optional ZIP and expires related price snapshots. GET /api/v1/ingestion/status and /api/v1/catalog/export are diagnostics.
 
 ## Authentication and provider scope
 
@@ -65,3 +65,9 @@ name or reuse IDs across sources. Image URLs are optional. MealMe currently uses
 Satsuma, not the Vercel proxy. Its raw `provider_price` and currency are diagnostic
 until units are verified; `price: null` and `selectable: false` prohibit cart use.
 Comparisons are observational, not a unified provider checkout.
+
+## Retailer discovery and geographic scope
+
+SearchResponse.retailers lists visible retailer sections (id, name, products_returned, branch_verified=false). diagnostics lists query, cards_seen, products_returned, retailers_with_products, settled, page_url and observed_zip. The public page is bounded to 8 products per retailer, 80 per query, collected round-robin after stabilization; it is not a complete catalog. Exact retailer requests filter returned links to that retailer id.
+
+location.verified means only that the active address-control ZIP matches the requested ZIP after the search. verification_scope=zip_only, store_branch_verified=false and delivery_serviceability_verified=false. Do not infer a local store from a product brand, retailer slug, or requested ZIP partition. Unverified cached rows keep their source observed_zip and must remain labeled as provider-context observations.

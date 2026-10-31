@@ -49,13 +49,14 @@ class Comparison:
                 'activity':[dict(zip(('at','provider','zip','outcome','http_status','item_count','cache_hit'),r)) for r in rows]}
     def one(self,provider,z,queries,store,allow,mode):
         start=time.monotonic();items=[];warnings=[];cache_hits=[];location={'requested_zip':z,'verified':False}
+        found_retailers={};diagnostics=[]
         error=None;status='ok';upstream=None
         try:
             if mode=='catalog':
                 items=self.catalog.search(queries,z,store or None,provider=provider)
                 status='cached' if items else 'not_cached'
                 warnings=['Stored snapshots only; no upstream request. Compare freshness and location before use.']
-                cache_hits=[True]
+                cache_hits=[bool(items)]
             else:
                 if provider=='mealme_satsuma' and store:
                     raise satsuma.ProviderError('unsupported_retailer','MealMe comparison uses all account-enabled merchants; ALDI filter is unsupported.')
@@ -83,6 +84,8 @@ class Comparison:
                                 self.catalog.ingest(z,q,payload,meta['expires_in'])
                         finally:lock.release()
                     location=payload['location'];warnings.extend(payload.get('warnings',[]))
+                    found_retailers.update({r['id']:r for r in payload.get('retailers',[])})
+                    diagnostics.extend(payload.get('diagnostics',[]))
                     items.extend({**i,'provider':provider,'age_seconds':meta['age_seconds'],'price_expires_in':meta['expires_in'],
                                   'price_fresh':meta['expires_in']>0,'retrieved_at':payload.get('retrieved_at'),
                                   'location_verified':payload['location']['verified']} for i in payload['items'])
@@ -97,6 +100,7 @@ class Comparison:
         for item in items:item['selectable']=False
         self.activity(provider,z,status,items,upstream, bool(cache_hits) and all(cache_hits))
         return {'provider':provider,'status':status,'error':error,'items':items,'location':location,
+                'retailers':list(found_retailers.values()),'diagnostics':diagnostics,
                 'warnings':list(dict.fromkeys(warnings)),'cache_hit':bool(cache_hits) and all(cache_hits),
                 'duration_ms':round((time.monotonic()-start)*1000),
                 'metrics':{'products':len(items),'with_prices':sum(i.get('price') is not None or i.get('provider_price') is not None for i in items),

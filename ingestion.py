@@ -67,7 +67,7 @@ class Ingestor:
     def enqueue(self,query,due=None,zip_code=None,retailer=None):
         query=' '.join(query.casefold().split())[:120]
         z=zip_code or self.zip;store=self.retailer if retailer is None else retailer
-        if not query or not re.fullmatch(r'\d{5}',z) or store not in ('','aldi'):return False
+        if not query or not re.fullmatch(r'\d{5}',z) or (not isinstance(store,str) or (store and not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}',store))):return False
         with self.mutex:
             for job in self.jobs:
                 if (job['zip'],job['retailer'],job['query'].casefold())==(z,store,query):

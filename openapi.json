@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "InstaSearch API Contract",
-    "version": "0.2.0",
-    "description": "Experimental integration contract. Current provider: Instacart public-browser connector. No authentication on this prototype. Use only test traffic. Cart validation does not update Instacart or place an order. Location and prices must be checked independently. Search snapshots expire within five minutes and can disappear on restart."
+    "version": "0.3.0",
+    "description": "Experimental integration contract. Current provider: Instacart public-browser connector. No authentication on this prototype. Use only test traffic. Cart validation does not update Instacart or place an order. Location and prices must be checked independently. Search snapshots expire within five minutes and can disappear on restart. Retailer discovery reflects visible provider context. ZIP confirmation is not store-branch or delivery verification."
   },
   "servers": [
     {
@@ -541,10 +541,10 @@
                     }
                   },
                   "retailer": {
-                    "enum": [
-                      "",
-                      "aldi"
-                    ]
+                    "type": "string",
+                    "pattern": "^([a-z0-9][a-z0-9-]{0,63})?$",
+                    "default": "",
+                    "description": "Empty discovers visible retailers; otherwise use a returned retailer id."
                   },
                   "allow_unverified_location": {
                     "type": "boolean",
@@ -706,6 +706,18 @@
           },
           "verified": {
             "type": "boolean"
+          },
+          "verification_method": {
+            "type": "string"
+          },
+          "verification_scope": {
+            "type": "string"
+          },
+          "delivery_serviceability_verified": {
+            "type": "boolean"
+          },
+          "store_branch_verified": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -775,11 +787,9 @@
           },
           "retailer": {
             "type": "string",
-            "enum": [
-              "",
-              "aldi"
-            ],
-            "default": ""
+            "pattern": "^([a-z0-9][a-z0-9-]{0,63})?$",
+            "default": "",
+            "description": "Empty discovers visible retailers; otherwise use a returned retailer id."
           },
           "allow_unverified_location": {
             "type": "boolean",
@@ -842,6 +852,33 @@
           },
           "cart_updated": {
             "type": "boolean"
+          },
+          "retailers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "products_returned": {
+                  "type": "integer"
+                },
+                "branch_verified": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
           }
         },
         "required": [
@@ -1109,10 +1146,7 @@
         "properties": {
           "retailer": {
             "type": "string",
-            "enum": [
-              "aldi",
-              "*"
-            ]
+            "pattern": "^(\\*|[a-z0-9][a-z0-9-]{0,63})$"
           },
           "zip": {
             "type": "string",

@@ -24,7 +24,7 @@ def validate(data):
     qs = data.get('queries', [data['query']] if 'query' in data else [])
     if not isinstance(qs, list) or not 1 <= len(qs) <= 3 or any(not isinstance(q, str) or not q.strip() or len(q) > 120 for q in qs): raise ValueError('Send query or queries with 1–3 nonempty strings, up to 120 characters each.')
     retailer = data.get('retailer', '')
-    if retailer not in ('', 'aldi'): raise ValueError('retailer must be empty or aldi for this prototype.')
+    if not isinstance(retailer,str) or (retailer and not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}',retailer)): raise ValueError('retailer must be empty or a valid retailer slug.')
     flag = data.get('allow_unverified_location', False)
     if type(flag) is not bool: raise ValueError('allow_unverified_location must be boolean.')
     return z, list(dict.fromkeys(q.strip() for q in qs)), retailer, flag
@@ -38,8 +38,10 @@ def merge_parts(parts, hit_queries, fetched_queries):
     location=dict(payloads[0]['location'])
     location['verified']=all(p['location']['verified'] for p in payloads)
     location['observed_zip']=observed.pop() if len(observed)==1 else None
+    retailer_rows={r['id']:dict(r) for p in payloads for r in p.get('retailers',[])}
+    for r in retailer_rows.values():r['products_returned']=sum(i.get('retailer')==r['id'] for i in products.values())
     meta={'hit':not fetched_queries,'partial_hit':bool(hit_queries and fetched_queries),'hit_queries':hit_queries,'fetched_queries':fetched_queries,'age_seconds':max(m['age_seconds'] for m in metas),'expires_in':min(m['expires_in'] for m in metas),'ttl_seconds':300}
-    return {'items':list(products.values()),'location':location,'warnings':list(dict.fromkeys(w for p in payloads for w in p.get('warnings',[]))),'retrieved_at':min(p.get('retrieved_at','') for p in payloads)},meta
+    return {'items':list(products.values()),'location':location,'warnings':list(dict.fromkeys(w for p in payloads for w in p.get('warnings',[]))),'retrieved_at':min(p.get('retrieved_at','') for p in payloads),'retailers':list(retailer_rows.values()),'diagnostics':[d for p in payloads for d in p.get('diagnostics',[])]},meta
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
@@ -58,13 +60,14 @@ class Handler(BaseHTTPRequestHandler):
             items=CATALOG.search(q,z,retailer,provider=None if provider=='all' else provider,limit=5000 if route.path.endswith('/export') else 100)
             for i in items:i['selectable']=i.get('provider','instacart')=='instacart' and isinstance(i.get('price'),(int,float)) and i['price_fresh'] and (i.get('location_verified',False) or allow)
             fresh=[i for i in items if i['selectable']]
-            location={'requested_zip':z,'observed_zip':None,'verified':bool(fresh) and all(i.get('location_verified') for i in fresh)}
+            observed={i.get('observed_zip') for i in items}
+            location={'requested_zip':z,'observed_zip':next(iter(observed)) if len(observed)==1 else None,'verified':bool(fresh) and all(i.get('location_verified') for i in fresh),'verification_scope':'zip_only','delivery_serviceability_verified':False,'store_branch_verified':False}
             sid=str(uuid.uuid4())
             payload={'search_id':sid,'status':'catalog','discovery':discovery,'items':items,'location':location,'catalog':CATALOG.counts(),'cache':{'hit':True,'age_seconds':max([i['age_seconds'] for i in items],default=0),'expires_in':min([i['price_expires_in'] for i in fresh],default=0)},'warnings':['Stored catalog; inspect price_fresh. Requested ZIP is not a verified store location.']}
             if fresh:
                 RESULTS[sid]={'created':time.time(),'expires':time.time()+min(i['price_expires_in'] for i in fresh),'payload':{**payload,'items':fresh}}
             return self.send(200,payload)
-        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.2.0'})
+        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.3.0'})
         if self.path=='/openapi.json': return self.send(200,SPEC)
         if route.path in ('/docs','/swagger','/android-contract.md','/instasearch-contract.md'):
             filename='android-contract.md' if route.path in ('/android-contract.md','/instasearch-contract.md') else 'swagger.html'
@@ -94,7 +97,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200,COMPARISON.compare(z,qs,store,flag,mode,list(dict.fromkeys(providers))))
             if self.path=='/api/v1/cache/invalidate':
                 retailer=data.get('retailer');z=data.get('zip')
-                if retailer not in ('aldi','*') or (z is not None and (not isinstance(z,str) or not re.fullmatch(r'\d{5}',z))): raise ValueError('Supply retailer aldi or *, and optional five-digit zip.')
+                if not isinstance(retailer,str) or not (retailer=='*' or re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}',retailer)) or (z is not None and (not isinstance(z,str) or not re.fullmatch(r'\d{5}',z))): raise ValueError('Supply a retailer slug or *, and optional five-digit zip.')
                 group=(retailer,z)
                 if now-INVALIDATIONS.get(group,0)<60:return self.send(429,{'error':'rate_limited','message':'Store invalidation is limited to once per minute.'})
                 INVALIDATIONS[group]=now
