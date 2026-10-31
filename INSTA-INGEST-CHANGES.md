@@ -7,7 +7,7 @@ The public search page can render several retailer shelves, but the previous con
 ## Implemented changes
 
 - Wait for the active address control to appear; use its ZIP rather than any five-digit text in the header.
-- Attempt the normal visible ZIP suggestion flow. A suggestion click alone never confirms location.
+- In strict mode, attempt the normal visible ZIP suggestion flow. Explicit unverified collection reads the current provider context without opening the full-address form. A suggestion click alone never confirms location.
 - In strict mode, return location_required when the provider cannot confirm the requested ZIP. Never manufacture a street address or silently enable unverified mode.
 - In explicit unverified mode, preserve the actual observed provider ZIP, and identify requested ZIPs as catalog partitions rather than coverage.
 - Wait at least eight seconds for all-retailer searches (four for explicit retailer searches) and require four stable snapshots. Bound collection to 22 seconds and report unsettled/partial results.

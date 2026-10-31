@@ -82,7 +82,7 @@ def establish_location(page, requested_zip, allow_unverified):
     except Exception:pass
     observed=observed_location(page)
     opened_picker=False
-    if observed!=requested_zip and control.count() and not page.get_by_role('dialog').count():
+    if observed!=requested_zip and not allow_unverified and control.count() and not page.get_by_role('dialog').count():
         field=page.get_by_role('textbox',name='Enter your address',exact=True)
         try:
             control.first.click(timeout=3000)
