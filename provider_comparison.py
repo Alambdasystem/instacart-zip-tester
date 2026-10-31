@@ -4,14 +4,18 @@ from concurrent.futures import ThreadPoolExecutor
 from connector import ConnectorError
 from search_cache import SearchCache
 import satsuma_provider as satsuma
+import vercel_provider as vercel
 
 class Comparison:
     def __init__(self,catalog,instacart_cache,browser_lock,fetch_instacart):
         self.catalog,self.icache,self.browser_lock,self.fetch_instacart=catalog,instacart_cache,browser_lock,fetch_instacart
         self.scache=SearchCache(ttl=300);self.slock=threading.Lock()
+        self.vcaches={p:SearchCache(ttl=300) for p in vercel.PROVIDERS}
+        self.vlocks={p:threading.Lock() for p in vercel.PROVIDERS}
         with catalog.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS provider_activity (id TEXT PRIMARY KEY, at REAL, provider TEXT, zip TEXT, outcome TEXT, http_status INTEGER, item_count INTEGER, cache_hit INTEGER)')
             db.execute('CREATE TABLE IF NOT EXISTS provider_calls (id INTEGER PRIMARY KEY, at REAL, path TEXT, status INTEGER)')
+            db.execute('CREATE TABLE IF NOT EXISTS vercel_calls (id INTEGER PRIMARY KEY, at REAL, path TEXT, status INTEGER)')
             db.execute('CREATE TABLE IF NOT EXISTS provider_state (provider TEXT PRIMARY KEY, retry_after REAL)')
     def activity(self,provider,z,outcome,items,status=None,cache_hit=False):
         with self.catalog.db() as db:
@@ -38,11 +42,36 @@ class Comparison:
                 db.execute('UPDATE provider_calls SET status=? WHERE id=?',(e.http_status,call_id))
                 db.execute('INSERT OR REPLACE INTO provider_state VALUES (?,?)',('mealme_satsuma',time.time()+300))
             raise
+    def vercel_request(self,path,params):
+        if path not in vercel.PATHS or params.get('providerId') not in vercel.PROVIDERS.values():
+            raise satsuma.ProviderError('unsupported_operation','Only proxy discovery/catalog reads are enabled.')
+        with self.catalog.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not os.getenv('VERCEL_MEALME_API_KEY'):
+                raise satsuma.ProviderError('not_configured','Vercel proxy key is not configured. Billing/key setup is separate from Satsuma.')
+            retry=db.execute("SELECT retry_after FROM provider_state WHERE provider='vercel_proxy'").fetchone()
+            if retry and retry[0]>time.time():raise satsuma.ProviderError('cooldown','Proxy retry delayed for five minutes after failure.')
+            used=db.execute('SELECT COUNT(*) FROM vercel_calls').fetchone()[0]
+            budget=max(0,min(100,int(os.getenv('VERCEL_MEALME_READ_BUDGET','0'))))
+            if used>=budget:raise satsuma.ProviderError('budget_exhausted','Proxy read budget is disabled or exhausted. No upstream request sent.')
+            call_id=db.execute('INSERT INTO vercel_calls(at,path) VALUES (?,?)',(time.time(),path)).lastrowid
+        try:
+            data=vercel.request(path,params)
+            with self.catalog.db() as db:db.execute('UPDATE vercel_calls SET status=200 WHERE id=?',(call_id,))
+            return data
+        except satsuma.ProviderError as e:
+            with self.catalog.db() as db:
+                db.execute('UPDATE vercel_calls SET status=? WHERE id=?',(e.http_status,call_id))
+                db.execute('INSERT OR REPLACE INTO provider_state VALUES (?,?)',('vercel_proxy',time.time()+300))
+            raise
     def status(self):
         with self.catalog.db() as db:
             rows=db.execute('SELECT at,provider,zip,outcome,http_status,item_count,cache_hit FROM provider_activity ORDER BY at DESC LIMIT 50').fetchall()
             used=db.execute('SELECT COUNT(*) FROM provider_calls').fetchone()[0]
-        return {'satsuma_configured':bool(os.getenv('SATSUMA_API_KEY')),'satsuma_base_url':satsuma.BASE_URL,
+            vused=db.execute('SELECT COUNT(*) FROM vercel_calls').fetchone()[0]
+        return {'vercel_proxy':{'configured':bool(os.getenv('VERCEL_MEALME_API_KEY')),'base_url':vercel.BASE_URL,
+                'read_budget':max(0,min(100,int(os.getenv('VERCEL_MEALME_READ_BUDGET','0')))),
+                'attempts_in_database':vused,'background_ingestion':False,'live_contract_verified':False},'satsuma_configured':bool(os.getenv('SATSUMA_API_KEY')),'satsuma_base_url':satsuma.BASE_URL,
                 'satsuma_background_ingestion':False,'read_attempts_in_database':used,
                 'satsuma_read_budget':int(os.getenv('SATSUMA_READ_BUDGET','10')),
                 'storage':'SQLite on current instance; ephemeral unless CATALOG_PATH is on a persistent disk',
@@ -58,10 +87,10 @@ class Comparison:
                 warnings=['Stored snapshots only; no upstream request. Compare freshness and location before use.']
                 cache_hits=[bool(items)]
             else:
-                if provider=='mealme_satsuma' and store:
-                    raise satsuma.ProviderError('unsupported_retailer','MealMe comparison uses all account-enabled merchants; ALDI filter is unsupported.')
-                cache=self.icache if provider=='instacart' else self.scache
-                lock=self.browser_lock if provider=='instacart' else self.slock
+                if provider!='instacart' and store:
+                    raise satsuma.ProviderError('unsupported_retailer','The retailer filter applies only to Instacart. Clear it for other providers.')
+                cache=self.icache if provider=='instacart' else self.vcaches[provider] if provider in vercel.PROVIDERS else self.scache
+                lock=self.browser_lock if provider=='instacart' else self.vlocks[provider] if provider in vercel.PROVIDERS else self.slock
                 for q in queries:
                     key=cache.key(z,[q],store,allow)
                     entry=cache.get(key)
@@ -78,18 +107,20 @@ class Comparison:
                                     payload=self.fetch_instacart(z,[q],store,allow)
                                     payload['provider']='instacart'
                                     payload['items']=[{**p,'provider':'instacart'} for p in payload['items']]
+                                elif provider in vercel.PROVIDERS:payload=vercel.search(z,[q],provider,self.vercel_request)
                                 else:payload=satsuma.search(z,[q],self.request)
                                 payload.setdefault('retrieved_at',time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()))
-                                meta=cache.put(key,payload);cache_hits.append(False)
+                                meta=({'age_seconds':0,'expires_in':300} if payload.get('error') else cache.put(key,payload));cache_hits.append(False)
                                 self.catalog.ingest(z,q,payload,meta['expires_in'])
                         finally:lock.release()
                     location=payload['location'];warnings.extend(payload.get('warnings',[]))
+                    if payload.get('error'):error=payload['error'];upstream=error.get('http_status')
                     found_retailers.update({r['id']:r for r in payload.get('retailers',[])})
                     diagnostics.extend(payload.get('diagnostics',[]))
                     items.extend({**i,'provider':provider,'age_seconds':meta['age_seconds'],'price_expires_in':meta['expires_in'],
                                   'price_fresh':meta['expires_in']>0,'retrieved_at':payload.get('retrieved_at'),
                                   'location_verified':payload['location']['verified']} for i in payload['items'])
-                status='ok' if items else 'empty'
+                status=('partial' if items else 'error') if error else ('ok' if items else 'empty')
         except (satsuma.ProviderError,ConnectorError) as e:
             status='partial' if items else 'error';upstream=getattr(e,'http_status',None)
             error={'code':getattr(e,'code',getattr(e,'status','provider_error')),'message':e.message,'http_status':upstream}

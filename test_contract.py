@@ -49,6 +49,10 @@ class ContractTests(unittest.TestCase):
                 code,data=self.post('/api/v1/compare',{'zip':'63110','queries':['milk'],'mode':'catalog'})
                 self.assertEqual(code,200);self.check(data,{'$ref':'#/components/schemas/ComparisonResponse'})
                 self.assertEqual([p['status'] for p in data['providers']],['not_cached','not_cached'])
+                code,all_sources=self.post('/api/v1/compare',{'zip':'63110','queries':['milk'],'mode':'catalog','providers':['instacart','mealme_satsuma','vercel_kroger','vercel_square']})
+                self.assertEqual(code,200);self.check(all_sources,{'$ref':'#/components/schemas/ComparisonResponse'})
+                self.assertEqual(len(all_sources['providers']),4)
+                self.assertTrue(all(p['status']=='not_cached' for p in all_sources['providers']))
                 self.assertEqual(self.post('/api/v1/compare',{'zip':'63110','queries':['milk'],'providers':['other']})[0],422)
                 self.assertEqual(self.post('/api/v1/compare',{'zip':'63110','queries':['milk'],'mode':'write'})[0],422)
 

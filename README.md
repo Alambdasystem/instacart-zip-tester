@@ -41,7 +41,7 @@ Run tests with `python -m unittest test_api -v`. Unit tests mock the provider an
 
 Successful searches are cached in server memory for at most 300 seconds. Keys include provider context (Instacart), requested ZIP, individual normalized query, retailer, and whether unverified location was explicitly allowed. Cache hits do not extend expiry. Changing a list from milk to milk plus eggs fetches only eggs; milk is reused while fresh. A store/location group's five-minute clock begins at its first fetch; newer products from that store expire with that clock. A cross-store query is also invalidated when a participating store expires. Product and cart price snapshots never outlive the source cache entry. No provider failures are cached as successful results.
 
-Responses include `cache.hit`, `cache.age_seconds`, `cache.expires_in`, and `cache.ttl_seconds`. `POST /api/v1/cache/invalidate` accepts `{"retailer":"aldi","zip":"63129"}` to expire matching bundles and cart validation snapshots, or retailer `*` for every retailer. This prototype rate-limits invalidation to once per group per minute. The cache is bounded to 100 bundles, one provider browser operates at a time, and the search handler does not poll. The optional ingestion worker separately refreshes its queue. Memory cache is lost on service sleep or redeployment; a future multi-instance version needs a shared Redis/Valkey store. Restaurant support is not implemented, but uses the same retailer/location grouping pattern.
+Responses include `cache.hit`, `cache.age_seconds`, `cache.expires_in`, and `cache.ttl_seconds`. `POST /api/v1/cache/invalidate` accepts `{"retailer":"aldi","zip":"63129"}` to expire matching bundles and cart validation snapshots, or retailer `*` for every retailer. This prototype rate-limits invalidation to once per group per minute. The cache is bounded to 100 bundles, one provider browser operates at a time, and the search handler does not poll. The optional ingestion worker separately refreshes its queue. Memory cache is lost on service sleep or redeployment; a future multi-instance version needs a shared Redis/Valkey store. Restaurant checkout is not implemented. The separate Vercel comparison adapter can sample restaurant catalog reads when configured.
 
 ## Trial catalog ingestion loop
 
@@ -106,3 +106,44 @@ Run `python -m unittest -v` (contract tests require `jsonschema` and
 proof of live MealMe products. The live portal audit on October 30 returned
 `/merchant` 200 (GoPuff only), `/location` 503 and `/product` 503. Current portal
 billing showed Free and 17/100 used after that three-call audit.
+
+
+## Vercel proxy comparison (not Satsuma)
+
+`vercel_kroger` and `vercel_square` are separate comparison sources at
+`https://mealmeai.vercel.app`. They use Bearer authentication and **must not**
+receive `SATSUMA_API_KEY`. The existing Instacart ingestion loop is unchanged.
+
+Set `VERCEL_MEALME_API_KEY` only in the server secret environment. Set
+`VERCEL_MEALME_READ_BUDGET` to an explicitly approved number of attempts (0–100;
+default **0**). Both proxy sources share this budget, while Satsuma accounting
+remains separate. The portal currently requires billing activation before key
+creation and lists $0.10 per successful call. Do not activate billing implicitly.
+The local budget is a trial guard, not a durable billing limit: SQLite is ephemeral
+on the current free Render instance and counters reset if its data is lost.
+
+`POST /api/v1/compare` accepts up to four provider names:
+`instacart`, `mealme_satsuma`, `vercel_kroger`, `vercel_square`.
+Example: `{"zip":"63110","queries":["milk"],"mode":"live","providers":["vercel_kroger"]}`.
+Use `mode: "catalog"` for stored snapshots without upstream calls. Clear the
+Instacart retailer filter when comparing other sources.
+
+Each proxy query makes one store search, then at most two selected-store catalog
+reads (maximum 3 requests/query/source, 18 for three queries across both sources).
+Kroger radius is 25 miles; Square is 5 miles. This is a bounded sample, not complete
+coverage, GPS, or delivery serviceability. The adapter uses the documented
+`radiusInMiles`, `zipCode`, `providerId`, and returned `providerLocationId` fields.
+IDs are namespaced by source/store/item. Caches are independent and expire in five
+minutes. Failures trigger a shared five-minute proxy cooldown; partial failures
+are not cached as successful responses. Successfully discovered stores remain
+visible even if catalog reads fail. No raw provider payloads/tokens are persisted.
+
+Store-search fields are documented; catalog mappings are provisional, covered by
+synthetic fixtures, and **not yet verified against this account**. Unexpected
+response shapes return an error rather than pretending there are no products.
+Prices stay raw/unverified, products are comparison-only, and no carts, OAuth,
+checkout, orders, or payments are called. Missing or unsafe image URLs stay absent.
+
+Portal documentation inspected: https://mealmeai.vercel.app/docs
+Local tests: `python -m unittest discover -q`.
+Live activation requires the account's own key and an approved read budget.

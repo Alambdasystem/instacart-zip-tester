@@ -56,7 +56,7 @@ class Handler(BaseHTTPRequestHandler):
             params=parse_qs(route.query);q=[x[:120] for x in params.get('queries',params.get('query',['']))[:3]];z=params.get('zip',[None])[0];retailer=params.get('retailer',[None])[0];allow=params.get('allow_unverified_location',['false'])[0]=='true'
             discovery=INGESTOR.observe(z,q,retailer or '') if INGESTOR and route.path=='/api/v1/catalog' and z else None
             provider=params.get('provider',['instacart'])[0]
-            if provider not in ('instacart','mealme_satsuma','all'):return self.send(422,{'error':'invalid_provider'})
+            if provider not in ('instacart','mealme_satsuma','vercel_kroger','vercel_square','all'):return self.send(422,{'error':'invalid_provider'})
             items=CATALOG.search(q,z,retailer,provider=None if provider=='all' else provider,limit=5000 if route.path.endswith('/export') else 100)
             for i in items:i['selectable']=i.get('provider','instacart')=='instacart' and isinstance(i.get('price'),(int,float)) and i['price_fresh'] and (i.get('location_verified',False) or allow)
             fresh=[i for i in items if i['selectable']]
@@ -87,7 +87,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path=='/api/v1/compare':
                 z,qs,store,flag=validate(data)
                 mode=data.get('mode','catalog');providers=data.get('providers',['instacart','mealme_satsuma'])
-                if mode not in ('catalog','live') or not isinstance(providers,list) or not providers or len(providers)>2 or any(p not in ('instacart','mealme_satsuma') for p in providers):raise ValueError('Invalid comparison options.')
+                if mode not in ('catalog','live') or not isinstance(providers,list) or not providers or len(providers)>4 or any(p not in ('instacart','mealme_satsuma','vercel_kroger','vercel_square') for p in providers):raise ValueError('Invalid comparison options.')
                 if mode=='live':
                     client='compare:'+hashlib.sha256(self.client_address[0].encode()).hexdigest()
                     if len(RATE)>1000:RATE.clear()
@@ -101,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
                 group=(retailer,z)
                 if now-INVALIDATIONS.get(group,0)<60:return self.send(429,{'error':'rate_limited','message':'Store invalidation is limited to once per minute.'})
                 INVALIDATIONS[group]=now
-                removed=CACHE.invalidate(retailer,z)+COMPARISON.scache.invalidate(retailer,z)
+                removed=CACHE.invalidate(retailer,z)+COMPARISON.scache.invalidate(retailer,z)+sum(c.invalidate(retailer,z) for c in COMPARISON.vcaches.values())
                 CATALOG.invalidate(retailer,z)
                 expired=0
                 for sid,result in list(RESULTS.items()):

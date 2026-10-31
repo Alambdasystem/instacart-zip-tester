@@ -189,7 +189,9 @@
               "enum": [
                 "instacart",
                 "mealme_satsuma",
-                "all"
+                "all",
+                "vercel_kroger",
+                "vercel_square"
               ],
               "default": "instacart"
             }
@@ -448,7 +450,9 @@
               "enum": [
                 "instacart",
                 "mealme_satsuma",
-                "all"
+                "all",
+                "vercel_kroger",
+                "vercel_square"
               ],
               "default": "instacart"
             }
@@ -500,7 +504,7 @@
     },
     "/api/v1/compare": {
       "post": {
-        "summary": "Compare Instacart and account-enabled MealMe/Satsuma; inspect each provider status",
+        "summary": "Compare isolated Instacart, Satsuma, Vercel Kroger and Vercel Square read results",
         "requestBody": {
           "required": true,
           "content": {
@@ -536,7 +540,9 @@
                     "items": {
                       "enum": [
                         "instacart",
-                        "mealme_satsuma"
+                        "mealme_satsuma",
+                        "vercel_kroger",
+                        "vercel_square"
                       ]
                     }
                   },
@@ -1226,7 +1232,9 @@
           "provider": {
             "enum": [
               "instacart",
-              "mealme_satsuma"
+              "mealme_satsuma",
+              "vercel_kroger",
+              "vercel_square"
             ]
           },
           "price": {
@@ -1299,7 +1307,9 @@
           "provider": {
             "enum": [
               "instacart",
-              "mealme_satsuma"
+              "mealme_satsuma",
+              "vercel_kroger",
+              "vercel_square"
             ]
           },
           "status": {
