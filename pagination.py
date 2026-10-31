@@ -5,7 +5,9 @@ import deadline
 def expand(page,state,snapshot,wait_catalog,observed_location,z,allow,query,maximum=4,limit=500):
     if maximum<=0:return state,{'actions':[],'stop_reason':'disabled','action_limit':0,'item_limit':limit}
     cards={(c.get('url'),c.get('name')):c for c in state['cards']};retailers={r['url']:r for r in state['retailers']}
-    actions=[];reason='no_visible_next';groups=page.locator('[role="group"][aria-label="retailer"]')
+    # Observed provider DOM: each retailer section contains the shelf cards and
+    # its carousel controls; the aria-labelled retailer group is only a header.
+    actions=[];reason='no_visible_next';groups=page.locator('main section:has(a[data-item-card-button]):has(button[aria-label="Next page"]), [role="main"] section:has(a[data-item-card-button]):has(button[aria-label="Next page"])')
     n=groups.count();start=int(hashlib.sha256(query.encode()).hexdigest()[:8],16)%max(1,n)
     scopes=[('shelf',groups.nth((start+i)%n)) for i in range(n)]
     nav=page.get_by_role('navigation')
