@@ -55,6 +55,14 @@ class ConnectorTests(unittest.TestCase):
         self.assertIsNone(observed_location(page))
         with self.assertRaises(ConnectorError):establish_location(page,'63129',False)
         self.assertEqual(establish_location(page,'63129',True),(None,False))
+    def test_detached_address_control_is_unverified_not_timeout(self):
+        page=Mock();page.get_by_role.return_value.count.return_value=1
+        page.get_by_role.return_value.first.get_attribute.side_effect=TimeoutError('detached')
+        self.assertIsNone(observed_location(page))
+    def test_body_replacement_during_catalog_render_recovers(self):
+        page=RenderPage();page.locator=Mock(return_value=Mock(inner_text=Mock(side_effect=[TimeoutError('replaced')]+['Current price: $2.99']*40)))
+        state,settled=wait_for_catalog(page,clock=lambda:page.t)
+        self.assertTrue(settled);self.assertEqual(len(state['cards']),14)
     def test_preserves_actual_different_zip(self):
         page=Mock();page.locator.return_value.inner_text.return_value='';control=Mock();control.count.return_value=1;control.first.get_attribute.return_value='current address: 67570. Or select a new address.'
         page.get_by_role.side_effect=lambda role,**kw:control if role=='button' else Mock(count=Mock(return_value=1))

@@ -62,15 +62,19 @@ SNAPSHOT_JS = """() => {
 
 def observed_location(page):
     """Only the address control is authoritative, never an arbitrary five-digit header string."""
-    control=page.get_by_role('button',name=re.compile(r'^current address:',re.I))
-    if not control.count():return None
-    label=control.first.get_attribute('aria-label') or control.first.inner_text()
-    match=re.search(r'\b[0-9]{5}\b',label or '')
-    return match.group(0) if match else None
+    try:
+        control=page.get_by_role('button',name=re.compile(r'^current address:',re.I))
+        if not control.count():return None
+        label=control.first.get_attribute('aria-label',timeout=1200) or control.first.inner_text(timeout=1200)
+        match=re.search(r'\b[0-9]{5}\b',label or '')
+        return match.group(0) if match else None
+    except Exception:
+        return None  # Hydration may detach the control between count and read.
 
 
 def establish_location(page, requested_zip, allow_unverified):
-    body=page.locator('body').inner_text(timeout=2500)
+    try:body=page.locator('body').inner_text(timeout=2500)
+    except Exception:body=''
     if re.search(r'verify you are human|checking your browser|unusual traffic|automated queries|access denied',body,re.I):
         raise ConnectorError('provider_blocked','Instacart is screening this browser. No bypass was attempted.')
     control=page.get_by_role('button',name=re.compile(r'^current address:',re.I))
@@ -78,9 +82,9 @@ def establish_location(page, requested_zip, allow_unverified):
     except Exception:pass
     observed=observed_location(page)
     if observed!=requested_zip and control.count() and not page.get_by_role('dialog').count():
-        control.first.click()
         field=page.get_by_role('textbox',name='Enter your address',exact=True)
         try:
+            control.first.click(timeout=3000)
             field.wait_for(state='visible',timeout=4000)
             field.fill(requested_zip)
             option=page.get_by_role('button',name=re.compile('^'+requested_zip+r'\b'))
@@ -101,7 +105,9 @@ def establish_location(page, requested_zip, allow_unverified):
         dialog=page.get_by_role('dialog',name='Choose address',exact=True)
         if dialog.count():
             close=dialog.get_by_role('button',name='Close',exact=True)
-            if close.count():close.click()
+            if close.count():
+                try:close.click(timeout=3000)
+                except Exception:pass
     return observed,verified
 
 
@@ -109,7 +115,9 @@ def wait_for_catalog(page, retailer='', timeout=22, clock=time.monotonic):
     """Wait beyond first paint and require a stable, nonempty retailer/card signature."""
     start=clock();last=None;stable=0;state={'cards':[],'retailers':[]}
     while clock()-start<timeout:
-        body=page.locator('body').inner_text(timeout=2500)
+        try:body=page.locator('body').inner_text(timeout=2500)
+        except Exception:
+            page.wait_for_timeout(750);continue
         if re.search(r'verify you are human|checking your browser|unusual traffic|automated queries|access denied',body,re.I):
             raise ConnectorError('provider_blocked','Instacart is screening this browser. No bypass was attempted.')
         dialogs=page.get_by_role('dialog')
