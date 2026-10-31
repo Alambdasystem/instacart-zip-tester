@@ -74,6 +74,10 @@ SNAPSHOT_JS = r"""() => {
 }"""
 
 
+def street_tokens(text):
+    text=re.sub(r'^current address:\s*','',text,flags=re.I).split('. Or select')[0]
+    return [t for t in re.findall(r'[a-z0-9]+',text.casefold()) if t not in {'road','rd','street','st','avenue','ave','drive','dr','boulevard','blvd'}]
+
 def observed_location(page):
     """Only the address control is authoritative, never an arbitrary five-digit header string."""
     try:
@@ -81,7 +85,10 @@ def observed_location(page):
         if not control.count():return None
         label=control.first.get_attribute('aria-label',timeout=1200) or control.first.inner_text(timeout=1200)
         match=re.search(r'\b[0-9]{5}\b',label or '')
-        return match.group(0) if match else None
+        if match:return match.group(0)
+        confirmation=getattr(page,'_instasearch_address_confirmation',None)
+        if isinstance(confirmation,dict) and street_tokens(label or '')[:len(confirmation['tokens'])]==confirmation['tokens']:return confirmation['zip']
+        return None
     except Exception:
         return None  # Hydration may detach the control between count and read.
 
@@ -108,17 +115,27 @@ def establish_location(page, requested_zip, allow_unverified):
             field.wait_for(state='visible',timeout=4000)
             search_text=(', '.join([address['line1'],address['city'],address['region'],requested_zip]) if address else requested_zip)
             field.fill(search_text)
-            option=page.get_by_role('button',name=re.compile(re.escape(address['line1']) if address else '^'+requested_zip+r'\b',re.I))
+            address_tokens=street_tokens(address['line1']) if address else []
+            suggestion_pattern=r'^'+r'\s+'.join(map(re.escape,address_tokens)) if address else '^'+requested_zip+r'\b'
+            option=page.get_by_role('button',name=re.compile(suggestion_pattern,re.I))
             option.first.wait_for(state='visible',timeout=5000)
+            suggestion_text=option.first.inner_text(timeout=2000) if address else ''
             option.first.click()
             if address:
                 save=page.get_by_role('button',name=re.compile(r'^Save address$',re.I))
-                if save.count() and save.first.is_enabled():save.first.click(timeout=4000)
+                if save.count():
+                    save_deadline=time.monotonic()+12
+                    while not save.first.is_enabled() and time.monotonic()<save_deadline:page.wait_for_timeout(400)
+                    if save.first.is_enabled():
+                        save.first.click(timeout=4000)
+                        dialog=page.get_by_role('dialog')
+                        if dialog.count():dialog.first.wait_for(state='hidden',timeout=12000)
                 # Selection requires provider acknowledgment, never simply a successful click.
                 address_selected=not page.get_by_role('dialog').count()
                 active=(control.first.get_attribute('aria-label',timeout=1200) or control.first.inner_text(timeout=1200) or '').casefold()
-                tokens=[t for t in re.findall(r'[a-z0-9]+',address['line1'].casefold()) if t not in {'road','rd','street','st','avenue','ave','drive','dr','boulevard','blvd'}]
-                address_selected=address_selected and all(t in active for t in tokens)
+                tokens=street_tokens(address['line1'])
+                address_selected=address_selected and street_tokens(active)[:len(tokens)]==tokens and bool(re.search(r'\b'+requested_zip+r'\b',suggestion_text))
+                if address_selected:page._instasearch_address_confirmation={'zip':requested_zip,'tokens':tokens}
             # A selected suggestion is not proof it was accepted. Read the address control again.
             deadline=time.monotonic()+5
             while time.monotonic()<deadline:

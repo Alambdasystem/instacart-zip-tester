@@ -79,6 +79,14 @@ class ConnectorTests(unittest.TestCase):
         page.get_by_role.side_effect=lambda role,**kw:control if role=='button' else Empty()
         self.assertEqual(establish_location(page,'63129',True),('67570',False))
         control.first.click.assert_called_once()
+    def test_confirmed_street_without_zip_retains_selected_suggestion_zip(self):
+        page=Mock();control=Mock();control.count.return_value=1
+        control.first.get_attribute.return_value='current address: 5430 Telegraph Road. Or select a new address.'
+        page.get_by_role.return_value=control
+        page._instasearch_address_confirmation={'zip':'63129','tokens':['5430','telegraph']}
+        self.assertEqual(observed_location(page),'63129')
+        control.first.get_attribute.return_value='current address: 5430 Old Telegraph Road. Or select a new address.'
+        self.assertIsNone(observed_location(page))
     def test_preserves_actual_different_zip(self):
         page=Mock();page.locator.return_value.inner_text.return_value='';control=Mock();control.count.return_value=1;control.first.get_attribute.return_value='current address: 67570. Or select a new address.'
         page.get_by_role.side_effect=lambda role,**kw:control if role=='button' else Mock(count=Mock(return_value=1),first=Mock(inner_text=Mock(return_value='Choose address')))
