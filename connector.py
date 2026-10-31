@@ -1,3 +1,4 @@
+from migration_validation import audit_html
 from deadline import check, bounded_ms, DeadlineExceeded
 from page_state import classify_dialog
 from telemetry import emit
@@ -279,13 +280,17 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                 emit('search_stage',provider='instacart',stage=stage)
                 bootstrap_address=bool(retailer and current_location(zip_code).get('address'))
                 url='https://www.instacart.com/store/'+(retailer+'/' if retailer and not bootstrap_address else '')+'s?k='+quote(query)
-                page.goto(url,wait_until='commit',timeout=bounded_ms(35000))
+                navigation=page.goto(url,wait_until='commit',timeout=bounded_ms(35000))
+                initial_dom=page.evaluate(SNAPSHOT_JS)
+                initial_cards=len(initial_dom.get('cards',[]))
                 emit('search_stage_complete',provider='instacart',stage=stage,duration_ms=round((time.monotonic()-phase_started)*1000))
                 stage='confirming address control'
                 phase_started=time.monotonic()
                 emit('search_stage',provider='instacart',stage=stage)
                 observed,verified=establish_location(page,zip_code,allow_unverified)
                 emit('search_stage_complete',provider='instacart',stage=stage,duration_ms=round((time.monotonic()-phase_started)*1000))
+                address_dom=page.evaluate(SNAPSHOT_JS)
+                address_cards=len(address_dom.get('cards',[]))
                 stage='waiting for retailer shelves to stabilize'
                 phase_started=time.monotonic()
                 emit('search_stage',provider='instacart',stage=stage)
@@ -304,12 +309,17 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                 observed=observed_location(page);verified=verified and observed==zip_code
                 if not verified and not allow_unverified:
                     raise ConnectorError('location_required','Active provider ZIP changed or could not be confirmed after search.')
+                html_audit={}
+                try:
+                    check()
+                    if navigation:html_audit=audit_html(navigation.text())
+                except Exception:html_audit={'audit_unavailable':True}
                 normalized=normalize(state['cards'],query,retailer,observed)
                 # Explicit retailer requests must not silently return another retailer.
                 if retailer:normalized=[item for item in normalized if item['retailer']==retailer]
                 items.extend(normalized);locations.append((observed,verified))
                 for r in discovered_retailers(state,normalized):retailers[r['id']]=r
-                diagnostics.append({'query':query,'cards_seen':len(state['cards']),'products_returned':len(normalized),'retailers_with_products':len({i['retailer'] for i in normalized}),'settled':settled,'collection_limit':500,'pagination_available':bool(state.get('has_next_page')),'page_url':page.url,'observed_zip':observed})
+                diagnostics.append({'query':query,'stage_counts':{'initial_html':html_audit,'initial_dom_cards':initial_cards,'address_selected_dom_cards':address_cards,'collected_cards':len(state['cards'])},'cards_seen':len(state['cards']),'products_returned':len(normalized),'retailers_with_products':len({i['retailer'] for i in normalized}),'settled':settled,'collection_limit':500,'pagination_available':bool(state.get('has_next_page')),'page_url':page.url,'observed_zip':observed})
                 if len(normalized)>=500 or state.get('has_next_page'):warnings.append('Results cover the current visible page; additional provider pages may exist. No retailer allowlist is applied.')
                 if not settled:warnings.append('Visible catalog did not fully stabilize before the time limit; coverage may be partial.')
                 if not verified:warnings.append('Requested ZIP '+zip_code+' is unverified; results belong to the provider context, not confirmed neighborhood inventory.')
