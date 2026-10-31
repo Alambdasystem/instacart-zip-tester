@@ -135,19 +135,36 @@ class Ingestor:
         self.scheduler_turn=saved.get('scheduler_turn',0) if saved else 0
         self.mutex=threading.RLock();self.stop=threading.Event();self.pause_reason=None;self.active=None;self.last_error=None
         self.circuit=(saved or {}).get('circuit');self.heartbeat=None;self.durations=(saved or {}).get('durations',[])
+        self.blocked_contexts={self.context_key(c['zip'],c['retailer']):c for c in (saved or {}).get('blocked_contexts',[])}
         if saved:
             self.pause_reason=saved.get('pause_reason')
             self.last_error=saved.get('last_error')
             if self.pause_reason and not self.last_error:
                 self.last_error={'status':self.pause_reason,'message':'A previous job reported a login or screening condition. Original page evidence may be unavailable. Use authenticated operator recovery after reviewing provider session/access.'}
+            if self.pause_reason=='login_required':
+                scope=dict(self.circuit or {})
+                if not all(k in scope for k in ('zip','query','retailer')):
+                    # Recover scope only from a uniquely latest retained failure;
+                    # unknown legacy evidence keeps its conservative global stop.
+                    paused=scope.get('paused_at')
+                    candidates=[j for j in self.jobs if j.get('last_status')=='login_required' and j.get('query')==(self.last_error or {}).get('query') and isinstance(paused,(int,float)) and j.get('last_attempt') and 0<=paused-j['last_attempt']<=120]
+                    newest=max((j['last_attempt'] for j in candidates),default=None)
+                    matches=[j for j in candidates if j['last_attempt']==newest]
+                    if len(matches)==1:scope.update({k:matches[0][k] for k in ('zip','query','retailer')})
+                if all(k in scope for k in ('zip','query','retailer')):
+                    scope.update(reason='login_required',scope='zip_retailer_discovery')
+                    self.blocked_contexts[self.context_key(scope['zip'],scope['retailer'])]=scope
+                    self.pause_reason=None;self.circuit=None;self.persist()
+    @staticmethod
+    def context_key(zip_code,retailer):return zip_code+'|'+retailer
     def persist(self):
         if self._batch:return
-        self.catalog.save_state(self.state_key,{'jobs':self.jobs,'attempts':self.attempts,'pause_reason':self.pause_reason,'last_error':self.last_error,'scheduler_turn':self.scheduler_turn,'circuit':self.circuit,'durations':self.durations[-50:]})
+        self.catalog.save_state(self.state_key,{'jobs':self.jobs,'attempts':self.attempts,'pause_reason':self.pause_reason,'last_error':self.last_error,'scheduler_turn':self.scheduler_turn,'circuit':self.circuit,'blocked_contexts':list(self.blocked_contexts.values()),'durations':self.durations[-50:]})
     def recover(self):
         with self.mutex:
             if self.pause_reason=='provider_blocked':raise ConnectorError('provider_blocked','Screening pause requires authorized provider-session recovery; anonymous retry is disabled.')
-            if not self.pause_reason:return {'status':'already_running','message':'No provider pause needs recovery.'}
-            scope=dict(self.circuit or {})
+            if not self.pause_reason and not self.blocked_contexts:return {'status':'already_running','message':'No provider pause needs recovery.'}
+            scope=dict(self.circuit or {}) if self.pause_reason else dict(next(iter(self.blocked_contexts.values()),{}))
             if not all(k in scope for k in ('zip','query','retailer')):
                 raise ConnectorError('recovery_context_required','The paused job context was not retained. Authorized provider-session setup is required; an unrelated public probe cannot clear this pause.')
         if not self.browser_lock.acquire(blocking=False):raise ConnectorError('busy','Browser is occupied; retry operator recovery later.')
@@ -157,6 +174,7 @@ class Ingestor:
             probe=self.fetch(scope['zip'],[scope['query']],scope['retailer'],True)
             if not probe.get('items'):raise ConnectorError('no_results','Recovery probe returned no readable products.')
             with self.mutex:
+                self.blocked_contexts.pop(self.context_key(scope['zip'],scope['retailer']),None)
                 self.pause_reason=None;self.circuit=None;self.last_error=None;self.persist()
             emit('ingestion_recovered',provider='instacart',status='probe_succeeded')
             return {'status':'recovered','probe_products':len(probe['items']),'location_verified':probe.get('location',{}).get('verified',False),'message':'Paused-job public-read probe succeeded. Background discovery resumed; no authenticated provider session was imported.'}
@@ -206,14 +224,15 @@ class Ingestor:
     def status(self,offset=0,limit=None):
         with self.mutex:
             now=self.clock()
-            return {'enabled':True,'running':not self.stop.is_set() and self.pause_reason is None,'paused_reason':self.pause_reason,'active_query':self.active,'zip':self.zip,'retailer':self.retailer or 'provider default','location_verified':False,'seed_type':'expanded curated foods and restaurant discovery probes; not measured popularity', 'search_groups':SEARCH_GROUPS, 'retailer_discovery_targets':RETAILER_DISCOVERY_TARGETS, 'restaurant_discovery_note':'Search matches do not verify restaurant menus, ordering support, or local availability','footprint':{'zip_codes':sorted({j['zip'] for j in self.jobs}),'zip_count':len({j['zip'] for j in self.jobs}),'unique_queries':len({j['query'] for j in self.jobs}),'jobs':len(self.jobs),'max_zip_codes':5,'max_jobs':MAX_JOBS,'max_queries_per_zip_retailer':MAX_QUERIES_PER_ZIP},'scheduler':{'tiers':{tier:sum(self.tier(j)==tier for j in self.jobs) for tier in ['hot','warm','discovery']},'refresh_targets_seconds':{'hot':240,'warm':1800,'discovery':21600},'discovery_reserved_share':0.2},'queue_pagination':{'offset':offset,'limit':limit,'total':len(self.jobs),'next_offset':offset+limit if limit is not None and offset+limit<len(self.jobs) else None},'queue':[dict(j,tier=self.tier(j),refresh_in_seconds=max(0,int(j['next_due']-now))) for j in self.jobs[offset:None if limit is None else offset+limit]],'last_error':self.last_error,'circuit':self.circuit or ({'reason':self.pause_reason,'evidence':'legacy_unavailable'} if self.pause_reason else None),'heartbeat':self.heartbeat,'throughput':{'sample_jobs':len(self.durations),'mean_job_seconds':round(sum(self.durations)/len(self.durations),2) if self.durations else None,'estimated_cycle_seconds':round(len(self.jobs)*(sum(self.durations)/len(self.durations)+15)) if self.durations else None,'estimate_scope':'single browser, includes post-job delay, excludes foreground contention and failures'},'attempts_last_hour':len([t for t in self.attempts if now-t<3600]),'hourly_budget':120,'storage':{'engine':'sqlite','path':self.catalog.path,'persistent_mount_configured':bool(os.getenv('RENDER_DISK_MOUNT_PATH'))},'resources':{'python_peak_rss_mb':round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024,1),'finished_children_peak_rss_mb':round(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss/1024,1),'catalog_bytes':Path(self.catalog.path).stat().st_size,'free_disk_mb':round(shutil.disk_usage(Path(self.catalog.path).parent).free/1048576)},'catalog':self.catalog.counts()}
+            eligible=sum(self.context_key(j['zip'],j['retailer']) not in self.blocked_contexts for j in self.jobs)
+            return {'enabled':True,'running':not self.stop.is_set() and self.pause_reason is None and eligible>0,'eligible_jobs':eligible,'work_state':'stopped' if self.stop.is_set() else 'provider_paused' if self.pause_reason else 'no_eligible_jobs' if not eligible else 'fetching' if self.active else 'scheduled','paused_reason':self.pause_reason,'blocked_contexts':list(self.blocked_contexts.values()),'blocked_jobs':sum(self.context_key(j['zip'],j['retailer']) in self.blocked_contexts for j in self.jobs),'active_query':self.active,'zip':self.zip,'retailer':self.retailer or 'provider default','location_verified':False,'seed_type':'expanded curated foods and restaurant discovery probes; not measured popularity', 'search_groups':SEARCH_GROUPS, 'retailer_discovery_targets':RETAILER_DISCOVERY_TARGETS, 'restaurant_discovery_note':'Search matches do not verify restaurant menus, ordering support, or local availability','footprint':{'zip_codes':sorted({j['zip'] for j in self.jobs}),'zip_count':len({j['zip'] for j in self.jobs}),'unique_queries':len({j['query'] for j in self.jobs}),'jobs':len(self.jobs),'max_zip_codes':5,'max_jobs':MAX_JOBS,'max_queries_per_zip_retailer':MAX_QUERIES_PER_ZIP},'scheduler':{'tiers':{tier:sum(self.tier(j)==tier for j in self.jobs) for tier in ['hot','warm','discovery']},'refresh_targets_seconds':{'hot':240,'warm':1800,'discovery':21600},'discovery_reserved_share':0.2},'queue_pagination':{'offset':offset,'limit':limit,'total':len(self.jobs),'next_offset':offset+limit if limit is not None and offset+limit<len(self.jobs) else None},'queue':[dict(j,tier=self.tier(j),refresh_in_seconds=max(0,int(j['next_due']-now))) for j in self.jobs[offset:None if limit is None else offset+limit]],'last_error':self.last_error,'circuit':self.circuit or ({'reason':self.pause_reason,'evidence':'legacy_unavailable'} if self.pause_reason else None),'heartbeat':self.heartbeat,'throughput':{'sample_jobs':len(self.durations),'mean_job_seconds':round(sum(self.durations)/len(self.durations),2) if self.durations else None,'estimated_cycle_seconds':round(len(self.jobs)*(sum(self.durations)/len(self.durations)+15)) if self.durations else None,'estimate_scope':'single browser, includes post-job delay, excludes foreground contention and failures'},'attempts_last_hour':len([t for t in self.attempts if now-t<3600]),'hourly_budget':120,'storage':{'engine':'sqlite','path':self.catalog.path,'persistent_mount_configured':bool(os.getenv('RENDER_DISK_MOUNT_PATH'))},'resources':{'python_peak_rss_mb':round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024,1),'finished_children_peak_rss_mb':round(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss/1024,1),'catalog_bytes':Path(self.catalog.path).stat().st_size,'free_disk_mb':round(shutil.disk_usage(Path(self.catalog.path).parent).free/1048576)},'catalog':self.catalog.counts()}
     def tick(self):
         now=self.clock();self.heartbeat=now
         with self.mutex:
             if self.pause_reason or self.stop.is_set():return False
             self.attempts=[t for t in self.attempts if now-t<3600]
             if len(self.attempts)>=120:return False
-            due=[j for j in self.jobs if j['next_due']<=now]
+            due=[j for j in self.jobs if j['next_due']<=now and self.context_key(j['zip'],j['retailer']) not in self.blocked_contexts]
             if not due:return False
             job=self.choose_job(due)
         if not self.browser_lock.acquire(blocking=False):return False
@@ -236,7 +255,11 @@ class Ingestor:
                 job['next_due']=self.clock()+min(1800,60*(2**min(job['failures']-1,5)))
                 self.last_error={'query':job['query'],'status':e.status,'message':e.message}
                 emit('ingestion_failed',provider='instacart',status=e.status)
-                if e.status in ('provider_blocked','login_required'):
+                if e.status=='login_required':
+                    scope={'reason':e.status,'paused_at':self.clock(),'scope':'zip_retailer_discovery','evidence':'visible_login_dialog','zip':job['zip'],'query':job['query'],'retailer':job['retailer']}
+                    self.blocked_contexts[self.context_key(job['zip'],job['retailer'])]=scope
+                    emit('ingestion_context_suspended',provider='instacart',status=e.status)
+                elif e.status=='provider_blocked':
                     self.pause_reason=e.status
                     self.circuit={'reason':e.status,'paused_at':self.clock(),'scope':'instacart_public_browser','evidence':'visible_dialog_or_screening','stage':getattr(e,'stage',None),'zip':job['zip'],'query':job['query'],'retailer':job['retailer']}
                     emit('ingestion_paused',provider='instacart',pause_reason=e.status)

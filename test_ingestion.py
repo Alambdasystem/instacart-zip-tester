@@ -38,6 +38,53 @@ class IngestionTests(unittest.TestCase):
         self.fetch.side_effect=ConnectorError('provider_blocked','screened')
         self.worker.tick();self.assertEqual(self.worker.pause_reason,'provider_blocked')
         calls=self.fetch.call_count;self.now+=3600;self.worker.tick();self.assertEqual(self.fetch.call_count,calls)
+    def test_login_suspends_context_and_other_contexts_continue(self):
+        self.worker.enqueue('bread',zip_code='63110')
+        self.worker.enqueue('milk',zip_code='63129',retailer='schnucks')
+        for job in self.worker.jobs:job.update(requests=0,last_requested=0)
+        self.fetch.side_effect=[ConnectorError('login_required','login'),self.payload,self.payload]
+        self.assertFalse(self.worker.tick())
+        self.assertIsNone(self.worker.pause_reason)
+        self.assertTrue(self.worker.tick());self.assertTrue(self.worker.tick())
+        scopes={(c.args[0],c.args[2]) for c in self.fetch.call_args_list[1:]}
+        self.assertEqual(scopes,{('63110',''),('63129','schnucks')})
+        self.now+=36000
+        self.worker.jobs=[j for j in self.worker.jobs if j['zip']=='63129' and not j['retailer']]
+        self.assertFalse(self.worker.tick());self.assertEqual(self.fetch.call_count,3)
+    def test_login_context_survives_restart_and_demand(self):
+        self.fetch.side_effect=ConnectorError('login_required','login')
+        self.worker.tick()
+        other=Ingestor(self.catalog,self.cache,self.lock,self.fetch,clock=lambda:self.now)
+        other.enqueue('milk');self.now+=3600
+        self.assertFalse(other.tick());self.assertEqual(self.fetch.call_count,1)
+        self.assertEqual(other.status()['blocked_jobs'],2)
+        self.assertEqual(other.status()['work_state'],'no_eligible_jobs')
+        self.assertFalse(other.status()['running'])
+    def test_legacy_login_scope_is_reconstructed_only_from_matching_failure(self):
+        self.worker.jobs[0].update(last_status='login_required',last_attempt=990)
+        self.worker.pause_reason='login_required';self.worker.last_error={'query':'milk','status':'login_required'}
+        self.worker.circuit={'reason':'login_required','paused_at':1000};self.worker.persist()
+        other=Ingestor(self.catalog,self.cache,self.lock,self.fetch,clock=lambda:self.now)
+        self.assertIsNone(other.pause_reason)
+        self.assertIn('63129|',other.blocked_contexts)
+        self.assertFalse(other.tick());self.fetch.assert_not_called()
+    def test_recovery_clears_only_one_login_context(self):
+        for z in ('63129','63110'):
+            self.worker.blocked_contexts[z+'|']={'zip':z,'retailer':'','query':'eggs','reason':'login_required'}
+        self.worker.recover()
+        self.fetch.assert_called_once_with('63129',['eggs'],'',True)
+        self.assertEqual(set(self.worker.blocked_contexts),{'63110|'})
+    def test_unscoped_global_pause_cannot_use_another_suspended_context(self):
+        self.worker.pause_reason='login_required';self.worker.circuit=None
+        self.worker.blocked_contexts['63110|']={'zip':'63110','retailer':'','query':'eggs'}
+        with self.assertRaises(ConnectorError):self.worker.recover()
+        self.fetch.assert_not_called();self.assertEqual(self.worker.pause_reason,'login_required')
+    def test_old_unrelated_failure_does_not_resolve_legacy_pause(self):
+        self.worker.jobs[0].update(last_status='login_required',last_attempt=100)
+        self.worker.pause_reason='login_required';self.worker.last_error={'query':'milk','status':'login_required'}
+        self.worker.circuit={'paused_at':1000};self.worker.persist()
+        other=Ingestor(self.catalog,self.cache,self.lock,self.fetch,clock=lambda:self.now)
+        self.assertEqual(other.pause_reason,'login_required');self.assertFalse(other.blocked_contexts)
     def test_shared_browser_lock_skips_background_work(self):
         self.lock.acquire()
         self.assertFalse(self.worker.tick());self.fetch.assert_not_called();self.lock.release()

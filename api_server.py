@@ -101,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
                 with CATALOG.db() as db:db.execute('SELECT 1').fetchone()
                 return self.send(200,{'status':'ready','storage_available':Path(CATALOG.path).exists(),'persistent_mount_configured':bool(os.getenv('RENDER_DISK_MOUNT_PATH'))})
             except Exception:return self.send(503,{'status':'not_ready','message':'Catalog storage unavailable'})
-        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.5.0'})
+        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.5.1'})
         if self.path=='/openapi.json': return self.send(200,SPEC)
         if route.path in ('/docs','/swagger','/android-contract.md','/instasearch-contract.md'):
             filename='android-contract.md' if route.path in ('/android-contract.md','/instasearch-contract.md') else 'swagger.html'

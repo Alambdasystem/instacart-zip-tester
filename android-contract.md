@@ -91,3 +91,12 @@ Normal search remains browser/cache-first. Anonymous HTTP is discovery-only and 
 Catalog observations now retain opaque address-context identity. Legacy/contextless or incompatible observations cannot issue selection quotes. Carts spanning different location contexts return `409 mixed_location_context`. Exact persistent cache reads warm memory without renewing expiry.
 
 Authenticated operators can recover a login-paused discovery worker with one bounded read probe against the same ZIP/query/retailer that failed. Run `python operator_recover.py --acknowledge-provider-access` inside the service shell. The command reads the server-local credential without printing it. Legacy pauses without retained job scope return recovery_context_required and require authorized session setup. An unrelated successful search cannot clear the circuit. Screening pauses remain stopped; successful public reads do not authenticate a customer or establish delivery eligibility.
+
+
+### Discovery isolation and provider handoff
+
+A login-required ingestion attempt suspends its ZIP + retailer discovery context across queries. It does not stop other eligible contexts or other providers. The suspension persists across restart and new demand does not clear it. Screening still stops the entire Instacart browser worker. Unknown legacy pauses remain stopped unless an exact failed context can be reconstructed from retained evidence.
+
+Ingestion status includes `blocked_contexts`, `blocked_jobs`, `eligible_jobs` and `work_state` (`scheduled`, `fetching`, `no_eligible_jobs`, `provider_paused`, `stopped`). `running` does not mean every queued job or price is fresh. Operator recovery probes one suspended context's original query and clears only that suspension on success.
+
+For local basket handoff, use each selected item's HTTPS `url`. The tester labels these links **Open on Instacart**. No provider basket transfer or checkout session is created; the customer continues on the provider website.

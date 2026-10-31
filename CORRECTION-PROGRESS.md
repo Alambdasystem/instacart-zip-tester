@@ -58,3 +58,12 @@ Operator recovery succeeded at 07:11:03 UTC: public-read probe returned 218 prod
 Final runtime follow-up 456bf064: ALDI navigation advanced past the missing-link race but encountered interactive login (502/login_required); no retry/bypass. Direct embedded image normalization returned 14/14 image URLs. Persistent-cache restart proof returned 236 items with no fetch, then L1 memory returned the same 236; expiry decreased 18→15 seconds. Worker resumed briefly, then a new milk job required access before location selection and paused again. The loop is NOT healthy or continuously filling: final snapshot 5,000 stored rows, zero fresh prices, 1,582 jobs, four ZIPs, 397 distinct queries.
 
 Recovery tightened after this finding: only the retained paused job's exact ZIP/query/retailer is probed; a legacy pause without scope returns recovery_context_required instead of clearing on an unrelated milk read. New circuits persist scope. Screening still prevents any probe. 111 tests pass including exact recovery fetch arguments and legacy fail-closed behavior. Continuous ingestion now requires authorized provider-session integration; do not repeatedly invoke recovery.
+
+
+## v0.5.1 discovery isolation and handoff
+
+Login-required work now suspends its exact ZIP/retailer discovery context, including all queries there, while eligible contexts continue. Screening remains a provider-wide stop. Persisted suspensions cannot be cleared by new demand. A legacy login circuit migrates only when it has explicit scope or a unique matching failed job within 120 seconds of its pause timestamp; unscoped/ambiguous pauses stay stopped. Operator recovery probes one original failed query and clears only that suspension.
+
+Status reports blocked contexts/jobs, eligible jobs, and explicit work_state; all-context suspension reports no_eligible_jobs, not a healthy running ingestion feed. The local basket displays validated HTTPS Instacart product links labeled Open on Instacart, with no automatic provider-cart transfer claim. Android contract updated.
+
+117 deterministic tests cover context isolation, continued work elsewhere, persistence, demand not bypassing suspension, exact scoped recovery, unknown global pause and stale legacy evidence. Live deployment/worker results must be distinguished from these fixtures. Broader normalized offer/job storage, shared search orchestration, pagination, hard cancellation, sustained coverage/soak, verified branch/delivery, authorized restricted-provider access and equivalent HTTP transport remain pending.
