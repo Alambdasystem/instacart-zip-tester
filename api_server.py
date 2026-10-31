@@ -1,3 +1,6 @@
+from operator_access import ensure_credential
+import hmac
+import deadline
 from direct_http import search_http, compare_results
 from telemetry import REQUEST_ID, emit
 from result_store import ResultStore
@@ -21,6 +24,7 @@ CACHE = SearchCache(ttl=300)
 INVALIDATIONS = {}
 CATALOG = Catalog(os.getenv('CATALOG_PATH',str(Path(os.getenv('RENDER_DISK_MOUNT_PATH','/tmp'))/'alambda-grocery-catalog.sqlite')))
 CACHE.attach(CATALOG,'instacart')
+OPERATOR_KEY=ensure_credential(CATALOG.path)
 INGESTOR = None
 COMPARISON = Comparison(CATALOG,CACHE,LOCK,lambda *a: search_browser(*a))
 
@@ -57,12 +61,16 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
     def handle_one_request(self):
         token=REQUEST_ID.set(uuid.uuid4().hex)
+        budget=deadline.begin(120)
         self.request_started=time.monotonic()
         try:return super().handle_one_request()
-        finally:REQUEST_ID.reset(token)
+        finally:
+            deadline.reset(budget);REQUEST_ID.reset(token)
     def send(self,code,data):
         emit('api_response',method=getattr(self,'command',''),path=urlsplit(self.path).path,http_status=code,status=data.get('status',data.get('error','ok')),duration_ms=round((time.monotonic()-getattr(self,'request_started',time.monotonic()))*1000))
-        raw=json.dumps(data).encode(); self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.send_header('X-Request-ID',REQUEST_ID.get() or uuid.uuid4().hex); self.end_headers(); self.wfile.write(raw)
+        raw=json.dumps(data).encode(); self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.send_header('X-Request-ID',REQUEST_ID.get() or uuid.uuid4().hex); self.end_headers();
+        try:self.wfile.write(raw)
+        except (BrokenPipeError,ConnectionResetError):emit('client_disconnected',status='response_abandoned')
     def do_GET(self):
         route=urlsplit(self.path)
         if route.path=='/api/v1/providers/status':return self.send(200,COMPARISON.status())
@@ -79,7 +87,7 @@ class Handler(BaseHTTPRequestHandler):
             provider=params.get('provider',['instacart'])[0]
             if provider not in ('instacart','mealme_satsuma','vercel_kroger','vercel_square','all'):return self.send(422,{'error':'invalid_provider'})
             items=CATALOG.search(q,z,retailer,provider=None if provider=='all' else provider,limit=5000 if route.path.endswith('/export') else 100)
-            for i in items:i['selectable']=i.get('provider','instacart')=='instacart' and isinstance(i.get('price'),(int,float)) and i['price_fresh'] and (i.get('location_verified',False) or allow)
+            for i in items:i['selectable']=i.get('provider','instacart')=='instacart' and isinstance(i.get('price'),(int,float)) and i['price_fresh'] and i.get('context_compatible',False) and (i.get('location_verified',False) or allow)
             fresh=[i for i in items if i['selectable']]
             observed={i.get('observed_zip') for i in items}
             location={'requested_zip':z,'observed_zip':next(iter(observed)) if len(observed)==1 else None,'verified':bool(fresh) and all(i.get('location_verified') for i in fresh),'verification_scope':'zip_only','delivery_serviceability_verified':False,'store_branch_verified':False}
@@ -93,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
                 with CATALOG.db() as db:db.execute('SELECT 1').fetchone()
                 return self.send(200,{'status':'ready','storage_available':Path(CATALOG.path).exists(),'persistent_mount_configured':bool(os.getenv('RENDER_DISK_MOUNT_PATH'))})
             except Exception:return self.send(503,{'status':'not_ready','message':'Catalog storage unavailable'})
-        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.4.0'})
+        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.5.0'})
         if self.path=='/openapi.json': return self.send(200,SPEC)
         if route.path in ('/docs','/swagger','/android-contract.md','/instasearch-contract.md'):
             filename='android-contract.md' if route.path in ('/android-contract.md','/instasearch-contract.md') else 'swagger.html'
@@ -106,7 +114,16 @@ class Handler(BaseHTTPRequestHandler):
             if not 0<size<=10000: raise ValueError('Request body must be 1–10000 bytes.')
             data=json.loads(self.rfile.read(size))
             if not isinstance(data,dict): raise ValueError('Expected a JSON object.')
+            if self.path=='/api/v1/ingestion/recover':
+                supplied=self.headers.get('Authorization','')
+                if not hmac.compare_digest(supplied,'Bearer '+OPERATOR_KEY):return self.send(403,{'error':'operator_required','message':'Authenticated operator access required.'})
+                if data!={'acknowledge':True}:raise ValueError('Explicit acknowledgment required.')
+                if not INGESTOR:return self.send(409,{'error':'worker_disabled'})
+                try:return self.send(200,INGESTOR.recover())
+                except ConnectorError as e:return self.send(409,{'status':e.status,'message':e.message})
             if self.path=='/api/v1/diagnostics/http-compare':
+                browser_mode=data.pop('browser_mode',data.get('mode','auto'))
+                if browser_mode not in ('auto','refresh','cache_only'):raise ValueError('Invalid browser_mode')
                 z,qs,store,flag=validate(data)
                 if len(qs)!=1:return self.send(422,{'error':'invalid_request','message':'Comparison accepts exactly one query.'})
                 client=self.client_address[0];now=time.time()
@@ -117,8 +134,8 @@ class Handler(BaseHTTPRequestHandler):
                 # Stop on explicit screening; do not use browser fallback to evade it.
                 if direct['status']=='provider_blocked':
                     return self.send(200,{'status':'provider_blocked','direct_http':direct,'browser':None,'normal_search_changed':False})
-                browser=COMPARISON.one('instacart',z,qs,store,flag,'auto')
-                return self.send(200,{'status':'compared','summary':compare_results(direct,browser),'direct_http':direct,'browser':browser,'normal_search_changed':False})
+                browser=COMPARISON.one('instacart',z,qs,store,flag,browser_mode)
+                return self.send(200,{'status':'compared','browser_mode':browser_mode,'direct_local_supported':False,'summary':compare_results(direct,browser),'direct_http':direct,'browser':browser,'normal_search_changed':False})
 
             now=time.time()
             RESULTS.prune()
@@ -164,6 +181,8 @@ class Handler(BaseHTTPRequestHandler):
                     item=next((i for i in result['payload']['items'] if i['id']==item_id),None)
                     if not item: raise ValueError('Unknown item.')
                     selected.append({**item,'search_id':sid,'quantity':qty,'line_total':float((Decimal(str(item['price']))*qty).quantize(Decimal('0.01'))),'location_verified':result['payload']['location']['verified']})
+                contexts={RESULTS.get(i['search_id'])['payload'].get('location',{}).get('context_id') or 'zip:'+str(RESULTS.get(i['search_id'])['payload'].get('location',{}).get('requested_zip')) for i in selected}
+                if len(contexts)>1:return self.send(409,{'error':'mixed_location_context','message':'Keep cart offers in one location context. Refresh the affected searches.'})
                 if INGESTOR:
                     for item in selected:
                         location=RESULTS.get(item['search_id'])['payload'].get('location',{})
@@ -177,7 +196,7 @@ class Handler(BaseHTTPRequestHandler):
                 products={p['id']:p for p in result['payload']['items']}
                 if any(i not in products for i in ids): raise ValueError('Unknown product ID for this search.')
                 selected=[products[i] for i in dict.fromkeys(ids)]
-                return self.send(200,{'selection_id':str(uuid.uuid4()),'items':selected,'subtotal':round(sum(p['price'] for p in selected),2),'currency':'USD','cart_updated':False,'location':result['payload']['location'],'message':'Selection only. Provider cart is unchanged.'})
+                return self.send(200,{'selection_id':str(uuid.uuid4()),'items':selected,'subtotal':float(sum((Decimal(str(p['price'])) for p in selected),Decimal('0')).quantize(Decimal('0.01'))),'currency':'USD','cart_updated':False,'location':result['payload']['location'],'message':'Selection only. Provider cart is unchanged.'})
             if self.path!='/api/v1/search': return self.send(404,{'error':'not_found'})
             if 'providers' in data:return self.send(422,{'error':'invalid_request','message':'Use /api/v1/compare to select providers.'})
             z,qs,store,flag=validate(data)
@@ -205,7 +224,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(200,payload)
                 return self.send(200,{'status':'cache_miss','items':[],'missing_queries':missing,'location':{'requested_zip':z,'verified':False},'cache':{'hit':False,'sources':[]}})
             if len(RATE[client])>=3:return self.send(429,{'error':'rate_limited','message':'Limit: three live searches per minute.'})
-            if not LOCK.acquire(timeout=15): return self.send(429,{'error':'busy','message':'One browser search is running. Retry shortly.'})
+            queued_at=time.monotonic()
+            if not LOCK.acquire(timeout=deadline.bounded_seconds(15)): return self.send(429,{'error':'busy','message':'One browser search is running. Retry shortly.'})
+            emit('browser_queue',provider='instacart',duration_ms=round((time.monotonic()-queued_at)*1000))
             RATE[client].append(now)
             try:
                 # A waiting caller can reuse work completed by the previous owner.

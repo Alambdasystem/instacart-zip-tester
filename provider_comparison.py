@@ -1,3 +1,4 @@
+from deadline import check, bounded_seconds, DeadlineExceeded
 from telemetry import emit
 from provider_registry import CAPABILITIES
 import contextvars
@@ -100,6 +101,7 @@ class Comparison:
                 cache=self.icache if provider=='instacart' else self.vcaches[provider] if provider in vercel.PROVIDERS else self.scache
                 lock=self.browser_lock if provider=='instacart' else self.vlocks[provider] if provider in vercel.PROVIDERS else self.slock
                 for q in queries:
+                    check()
                     key=cache.key(z,[q],store,allow)
                     entry=None if mode=='refresh' else cache.get(key)
                     if entry:
@@ -108,7 +110,7 @@ class Comparison:
                         if mode=='cache_only':continue
                         if time.monotonic()-start>90:
                             raise satsuma.ProviderError('request_budget_exceeded','Search time budget reached. Retry missing queries separately.')
-                        if not lock.acquire(timeout=15):raise satsuma.ProviderError('busy','Provider already has a request in progress. Retry shortly.')
+                        if not lock.acquire(timeout=bounded_seconds(15)):raise satsuma.ProviderError('busy','Provider already has a request in progress. Retry shortly.')
                         try:
                             entry=None if mode=='refresh' else cache.get(key)
                             if entry:payload,meta=entry;cache_hits.append(True)
@@ -135,6 +137,8 @@ class Comparison:
         except (satsuma.ProviderError,ConnectorError) as e:
             status='partial' if items else 'error';upstream=getattr(e,'http_status',None)
             error={'code':getattr(e,'code',getattr(e,'status','provider_error')),'message':e.message,'http_status':upstream}
+        except DeadlineExceeded:
+            status='partial' if items else 'error';error={'code':'request_budget_exceeded','message':'Shared search deadline exhausted. Retry missing queries separately.','http_status':None}
         except Exception:
             status='partial' if items else 'error';error={'code':'provider_error','message':'Provider lookup failed; no sample results substituted.','http_status':None}
         items=list({i['id']:i for i in items if any(matches_query(i.get('name',''),q) for q in queries)}.values())
@@ -142,7 +146,7 @@ class Comparison:
         # Comparison is observational; existing Instacart cart flow remains separate.
         for item in items:item['selectable']=False
         self.activity(provider,z,status,items,upstream, bool(cache_hits) and all(cache_hits))
-        return {'source':'catalog_discovery' if mode=='catalog' else 'cache_or_live','provider':provider,'status':status,'error':error,'items':items,'location':location,
+        return {'cache_sources':sorted({i.get('cache_source','catalog_discovery') for i in items}),'coverage_complete':False,'source':'catalog_discovery' if mode=='catalog' else 'cache_or_live','provider':provider,'status':status,'error':error,'items':items,'location':location,
                 'retailers':list(found_retailers.values()),'diagnostics':diagnostics,
                 'warnings':list(dict.fromkeys(warnings)),'cache_hit':bool(cache_hits) and all(cache_hits),
                 'duration_ms':round((time.monotonic()-start)*1000),

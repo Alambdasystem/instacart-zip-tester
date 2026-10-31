@@ -31,6 +31,16 @@ class MiddlewareTests(unittest.TestCase):
         with patch.object(api,'search_http',return_value={'status':'provider_blocked','items':[]}),patch.object(api.COMPARISON,'one') as fetch:
             status,data=self.post('/api/v1/diagnostics/http-compare',{'zip':'63129','query':'milk'})
         self.assertEqual(data['status'],'provider_blocked');fetch.assert_not_called()
+    def test_operator_recovery_requires_server_credential(self):
+        with patch.object(api,'INGESTOR') as worker:
+            status,data=self.post('/api/v1/ingestion/recover',{'acknowledge':True})
+        self.assertEqual(status,403);worker.recover.assert_not_called()
+    def test_explicit_comparison_mode_is_used(self):
+        direct={'status':'ok','items':[],'duration_ms':2,'location':{'verified':False}}
+        with patch.object(api,'search_http',return_value=direct),patch.object(api.COMPARISON,'one',return_value=direct) as fetch:
+            status,data=self.post('/api/v1/diagnostics/http-compare',{'zip':'63129','query':'milk','browser_mode':'refresh'})
+        self.assertEqual(status,200);self.assertEqual(fetch.call_args.args[-1],'refresh')
+        self.assertEqual(data['summary']['comparability'],'not_comparable')
     def test_response_request_id_matches_log(self):
         from telemetry import REQUEST_ID
         rows=[]
@@ -43,7 +53,7 @@ class MiddlewareTests(unittest.TestCase):
         with patch.dict(os.environ,{'CONNECTOR_ENABLED':'true'}),patch.object(api.LOCK,'acquire',return_value=False) as lock,patch.object(api,'search_browser') as fetch:
             status,data=self.post('/api/v1/search',{'zip':'63129','query':'milk'})
         self.assertEqual(status,429);self.assertEqual(data['error'],'busy')
-        lock.assert_called_once_with(timeout=15);fetch.assert_not_called()
+        self.assertLessEqual(lock.call_args.kwargs['timeout'],15);fetch.assert_not_called()
     def test_price_size_normalization(self):
         rows=normalize([{'name':'Milk','text':'Milk\nCurrent price: $2.78\n1 gal'}],'milk','aldi','63129')
         self.assertEqual((rows[0]['price'],rows[0]['size']), (2.78,'1 gal'))

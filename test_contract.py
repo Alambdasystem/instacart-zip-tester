@@ -32,6 +32,8 @@ class ContractTests(unittest.TestCase):
             catalog=json.load(urlopen(self.url+'/api/v1/catalog?zip=63129&queries=milk&allow_unverified_location=true'))
             self.check(catalog,{'$ref':'#/components/schemas/CatalogResponse'})
             code,cart=self.post('/api/v1/cart',{'lines':[{'search_id':catalog['search_id'],'item_id':item['id'],'quantity':2}]})
+            self.assertEqual(code,409)  # Contextless catalog observations cannot issue quotes.
+            code,cart=self.post('/api/v1/cart',{'lines':[{'search_id':result['search_id'],'item_id':item['id'],'quantity':2}]})
             self.assertEqual(code,200);self.check(cart,{'$ref':'#/components/schemas/CartResponse'})
             code,selection=self.post('/api/v1/select',{'search_id':result['search_id'],'item_ids':[item['id']]})
             self.assertEqual(code,200);self.check(selection,{'$ref':'#/components/schemas/SelectionResponse'})

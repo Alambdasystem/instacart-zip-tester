@@ -1,5 +1,5 @@
 """Offline migration gate for saved /diagnostics/http-compare JSON. Never calls providers."""
-import argparse,json
+import argparse,json,re
 from html.parser import HTMLParser
 from urllib.parse import unquote
 from decimal import Decimal,InvalidOperation
@@ -35,21 +35,25 @@ def validate_pair(data):
     a={i['id']:i for i in direct.get('items',[]) if i.get('id')};b={i['id']:i for i in browser.get('items',[]) if i.get('id')}
     la=direct.get('location') or {};lb=browser.get('location') or {}
     # Counts alone can't establish the same address/session or complete offers.
-    same_context=bool(la.get('verified') and lb.get('verified') and la.get('context_id') and la.get('context_id')==lb.get('context_id') and la.get('observed_zip')==lb.get('observed_zip'))
+    valid_zips=all(isinstance(loc.get('observed_zip'),str) and re.fullmatch(r'\d{5}',loc['observed_zip']) and loc.get('requested_zip',loc['observed_zip'])==loc['observed_zip'] for loc in (la,lb))
+    same_context=bool(valid_zips and la.get('verified') and lb.get('verified') and la.get('context_id') and la.get('context_id')==lb.get('context_id') and la.get('observed_zip')==lb.get('observed_zip'))
     overlap=set(a)&set(b)
     def money(value):
         try:
-            result=Decimal(str(value));return result if result.is_finite() else None
+            if isinstance(value,bool):return None
+            result=Decimal(str(value));return result if result.is_finite() and result>=0 else None
         except (InvalidOperation,ValueError):return None
     def same_offer(k):
         x,y=a[k],b[k]
         return (money(x.get('price')) is not None and money(x.get('price'))==money(y.get('price')) and x.get('currency') and x.get('currency')==y.get('currency') and x.get('size')==y.get('size') and x.get('retailer')==y.get('retailer'))
+    identities_unique=len(a)==len(direct.get('items',[])) and len(b)==len(browser.get('items',[]))
     gates={
+      'unique_identities':identities_unique,
       'successful_nonempty_results':bool(direct.get('status')=='ok' and browser.get('status')=='ok' and a and b),
       'same_verified_context':same_context,
       'same_product_retailer_ids':bool(a and set(a)==set(b)),
       'same_price_size_currency':bool(overlap and all(same_offer(k) for k in overlap) and set(a)==set(b)),
-      'image_coverage':bool(a and all(i.get('image_url') for i in a.values()) and set(a)==set(b)),
+      'image_coverage':bool(a and all(isinstance(i.get('image_url'),str) and i['image_url'].startswith('https://') for i in a.values()) and set(a)==set(b)),
       'coverage_proven':direct.get('coverage_complete') is True and browser.get('coverage_complete') is True,
     }
     return {'decision':'BLOCKED' if not all(gates.values()) else 'PAIR_PARITY_ONLY','gates':gates,'direct_products':len(a),'browser_products':len(b),'overlap':len(overlap),'matching_offers':sum(same_offer(k) for k in overlap),'release_approved':False,'note':'Pair parity alone never approves rollout. Complete the repeated matrix, cache, cart, resource and rollback checklist.'}

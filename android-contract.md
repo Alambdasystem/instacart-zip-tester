@@ -82,3 +82,12 @@ Modes: auto checks fresh memory then exact persistent snapshots and fetches miss
 ### Diagnostic transport comparison
 
 `POST /api/v1/diagnostics/http-compare` accepts the search request with exactly one query. It returns `direct_http`, `browser`, and `summary` (counts, image/price coverage, retailer IDs, elapsed time, and matching product/retailer IDs). The browser branch uses `auto` cache-first behavior. Direct HTML does not establish delivery location, does not create selection tokens, and never supplies cart quotes. Normal search behavior is unchanged. An explicit screening response stops the comparison.
+
+
+## v0.5 migration safety
+
+Normal search remains browser/cache-first. Anonymous HTTP is discovery-only and cannot establish local delivery context. Diagnostic `browser_mode` explicitly selects `auto`, `refresh`, or `cache_only`; frontend comparison requests `refresh`. Inspect `summary.comparability`, `summary.validation.gates`, source/cache status, coverage, and typed errors before comparing latency or prices.
+
+Catalog observations now retain opaque address-context identity. Legacy/contextless or incompatible observations cannot issue selection quotes. Carts spanning different location contexts return `409 mixed_location_context`. Exact persistent cache reads warm memory without renewing expiry.
+
+Authenticated operators can recover a login-paused discovery worker with one bounded read probe. Run `python operator_recover.py --acknowledge-provider-access` inside the service shell. The command reads the server-local credential without printing it. Screening pauses remain stopped; successful public reads do not authenticate a customer or establish delivery eligibility.

@@ -30,3 +30,12 @@ Second correction pass: thread-safe expiring quote store, conservative query mat
 
 
 Final pass adds durable store epochs, GPS on explicit click, address-save/header hydration polling and a delayed-form regression. 80 deterministic tests pass. Four-source live smoke: Kroger 40205 returned 24 items / 24 images / 16 raw price fields from two stores; Square 45202 discovered two restaurants but menu reads returned 502; Satsuma 63129 returned 503. These are not equivalent-product or delivery-verification claims.
+
+
+## v0.5 migration correctness release — October 31, 2026
+
+Implemented context-specific persistent offers with additive schema version/backup, separate bounded product descriptions, fail-closed legacy quote eligibility, mixed-context cart rejection, stricter parity gates, heading/srcset and full embedded-item extraction, explicit diagnostic browser modes, computed comparison decisions, structured comparison UI, monotonic stage budgets, narrower auth dialog classification, canonical address bootstrap before visible retailer navigation, L2-to-L1 hydration without TTL extension, and authenticated operator recovery with a bounded public-read probe. Worker status exposes circuit evidence, heartbeat and measured throughput.
+
+Direct local HTTP remains unsupported: no authorized address-context mechanism or complete matching catalog has been proven. It is discovery-only. No HTTP canary is enabled. Screening recovery remains blocked without authorized provider-session setup. Recovery helper runs in the service shell and never prints the local operator credential.
+
+Remaining architectural work from the broader plan: fully normalized offer/job tables, a single extracted search orchestration module, staged same-response browser capture, robust pagination, hard process cancellation on client disconnect, validated HTTP context transport, repeated parity matrix and canary. The monotonic deadlines bound individual stage waits but do not claim hard operating-system cancellation of DNS or all blocking I/O.

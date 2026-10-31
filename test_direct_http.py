@@ -17,7 +17,7 @@ class DirectTests(unittest.TestCase):
         result=search_http('63129','milk',opener=opener)
         self.assertEqual(result['status'],'http_error');opener.assert_called_once()
     def response(self,body):
-        r=Mock();r.status=200;r.headers={'Content-Type':'text/html'};r.read.return_value=body.encode();r.__enter__=Mock(return_value=r);r.__exit__=Mock(return_value=False);return r
+        r=Mock();r.status=200;r.headers={'Content-Type':'text/html'};r.read.side_effect=io.BytesIO(body.encode()).read;r.__enter__=Mock(return_value=r);r.__exit__=Mock(return_value=False);return r
     def test_screening_stops_without_extracting(self):
         result=search_http('63129','milk',opener=Mock(return_value=self.response('Verify you are human'+HTML)))
         self.assertEqual(result['status'],'provider_blocked');self.assertEqual(result['items'],[])

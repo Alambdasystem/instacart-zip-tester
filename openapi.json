@@ -621,20 +621,21 @@
     "/api/v1/diagnostics/http-compare": {
       "post": {
         "summary": "Compare direct public HTML and browser retrieval without changing normal search",
-        "description": "One query. Browser uses auto cache-first mode. Direct HTML establishes no address/ZIP context; its items are diagnostic and not selectable. A screening response stops the comparison.",
+        "description": "One query. Choose browser_mode explicitly: refresh for a live/cold comparison, auto for cache-first or cache_only. Direct HTTP remains anonymous discovery with no established address. The response reports comparability, gate results, cache hit and errors; normal search transport is unchanged.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SearchRequest"
+                "$ref": "#/components/schemas/HttpComparisonRequest"
               },
               "example": {
                 "zip": "63129",
                 "queries": [
                   "milk"
                 ],
-                "allow_unverified_location": false
+                "allow_unverified_location": false,
+                "browser_mode": "refresh"
               }
             }
           }
@@ -648,6 +649,50 @@
           },
           "429": {
             "description": "Rate limited"
+          }
+        }
+      }
+    },
+    "/api/v1/ingestion/recover": {
+      "post": {
+        "summary": "Authenticated operator recovery of a login-paused discovery worker",
+        "security": [
+          {
+            "OperatorBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "acknowledge"
+                ],
+                "properties": {
+                  "acknowledge": {
+                    "type": "boolean",
+                    "const": true
+                  }
+                }
+              },
+              "example": {
+                "acknowledge": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One public-read probe succeeded; worker resumed"
+          },
+          "403": {
+            "description": "Operator credential required"
+          },
+          "409": {
+            "description": "Probe failed, worker disabled or screening remains paused"
           }
         }
       }
@@ -1550,6 +1595,87 @@
             "coordinates"
           ]
         }
+      },
+      "HttpComparisonRequest": {
+        "type": "object",
+        "properties": {
+          "zip": {
+            "type": "string",
+            "pattern": "^[0-9]{5}$",
+            "example": "63129"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "queries": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          },
+          "retailer": {
+            "type": "string",
+            "pattern": "^([a-z0-9][a-z0-9-]{0,63})?$",
+            "default": "",
+            "description": "Empty discovers visible retailers; otherwise use a returned retailer id."
+          },
+          "allow_unverified_location": {
+            "type": "boolean",
+            "default": false,
+            "description": "Explicit consent to non-local demo results; never implies ZIP verification."
+          },
+          "location": {
+            "$ref": "#/components/schemas/LocationInput"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "cache_only",
+              "refresh",
+              "catalog",
+              "live"
+            ],
+            "default": "auto"
+          },
+          "browser_mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "refresh",
+              "cache_only"
+            ],
+            "default": "auto"
+          }
+        },
+        "required": [],
+        "anyOf": [
+          {
+            "required": [
+              "zip"
+            ]
+          },
+          {
+            "required": [
+              "location"
+            ]
+          }
+        ],
+        "description": "Provide query or queries. If both are present, queries takes precedence.",
+        "additionalProperties": false
+      }
+    },
+    "securitySchemes": {
+      "OperatorBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Server-local operator credential, never exposed in the public frontend."
       }
     }
   }

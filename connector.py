@@ -1,3 +1,5 @@
+from deadline import check, bounded_ms, DeadlineExceeded
+from page_state import classify_dialog
 from telemetry import emit
 from location_context import current_location, context_id
 """Bounded public-browser connector. No private API, login, or challenge bypass."""
@@ -84,7 +86,7 @@ def observed_location(page):
     try:
         control=page.get_by_role('button',name=re.compile(r'^current address:',re.I))
         if not control.count():return None
-        label=control.first.get_attribute('aria-label',timeout=1200) or control.first.inner_text(timeout=1200)
+        label=control.first.get_attribute('aria-label',timeout=bounded_ms(1200)) or control.first.inner_text(timeout=bounded_ms(1200))
         match=re.search(r'\b[0-9]{5}\b',label or '')
         if match:return match.group(0)
         confirmation=getattr(page,'_instasearch_address_confirmation',None)
@@ -95,12 +97,12 @@ def observed_location(page):
 
 
 def establish_location(page, requested_zip, allow_unverified):
-    try:body=page.locator('body').inner_text(timeout=2500)
+    try:body=page.locator('body').inner_text(timeout=bounded_ms(2500))
     except Exception:body=''
     if re.search(r'verify you are human|checking your browser|unusual traffic|automated queries|access denied',body,re.I):
         raise ConnectorError('provider_blocked','Instacart is screening this browser. No bypass was attempted.')
     control=page.get_by_role('button',name=re.compile(r'^current address:',re.I))
-    try:control.first.wait_for(state='visible',timeout=10000)
+    try:control.first.wait_for(state='visible',timeout=bounded_ms(10000))
     except Exception:pass
     observed=observed_location(page)
     requested=current_location(requested_zip)
@@ -110,37 +112,46 @@ def establish_location(page, requested_zip, allow_unverified):
     save_clicked=False;save_enabled=False;active_matches=False;suggestion_matches=False
     opened_picker=False
     address_stage='opening_picker';address_failure=None
-    if (observed!=requested_zip or address) and control.count() and not page.get_by_role('dialog').count():
-        field=page.get_by_role('textbox',name='Enter your address',exact=True)
+    field=page.get_by_role('textbox',name='Enter your address',exact=True)
+    dialogs=page.get_by_role('dialog')
+    existing_picker=False
+    if dialogs.count():
         try:
-            control.first.click(timeout=3000)
+            dialog_kind=classify_dialog(dialogs.first.inner_text(timeout=bounded_ms(2000)))
+            if dialog_kind in ('login_required','provider_blocked'):raise ConnectorError(dialog_kind,'Provider requires authorized access before location selection.')
+            existing_picker=dialog_kind=='address_dialog' and bool(field.count())
+        except ConnectorError:raise
+        except Exception:pass
+    if (observed!=requested_zip or address) and ((control.count() and not dialogs.count()) or existing_picker):
+        try:
+            if not existing_picker:control.first.click(timeout=bounded_ms(3000))
             opened_picker=True
             address_stage='address_input'
-            field.wait_for(state='visible',timeout=8000)
+            field.wait_for(state='visible',timeout=bounded_ms(8000))
             search_text=(', '.join([address['line1'],address['city'],address['region'],requested_zip]) if address else requested_zip)
             field.fill(search_text)
             address_tokens=street_tokens(address['line1']) if address else []
             suggestion_pattern=r'^'+r'\s+'.join(map(re.escape,address_tokens)) if address else '^'+requested_zip+r'\b'
             option=page.get_by_role('button',name=re.compile(suggestion_pattern,re.I))
             address_stage='address_suggestion'
-            option.first.wait_for(state='visible',timeout=15000)
-            suggestion_text=option.first.inner_text(timeout=2000) if address else ''
+            option.first.wait_for(state='visible',timeout=bounded_ms(15000))
+            suggestion_text=option.first.inner_text(timeout=bounded_ms(2000)) if address else ''
             option.first.click()
             if address:
                 save=page.get_by_role('button',name=re.compile(r'^Save address$',re.I))
                 address_stage='save_address_form'
-                save.first.wait_for(state='visible',timeout=12000)
+                save.first.wait_for(state='visible',timeout=bounded_ms(12000))
                 if save.count():
                     address_stage='save_address_enabled'
                     save_deadline=time.monotonic()+12
-                    while not save.first.is_enabled() and time.monotonic()<save_deadline:page.wait_for_timeout(400)
+                    while not save.first.is_enabled() and time.monotonic()<save_deadline:page.wait_for_timeout(bounded_ms(400))
                     save_enabled=save.first.is_enabled()
                     if save_enabled:
                         save_clicked=True
                         address_stage='save_address_acknowledgment'
-                        save.first.click(timeout=4000)
+                        save.first.click(timeout=bounded_ms(4000))
                         dialog=page.get_by_role('dialog')
-                        if dialog.count():dialog.first.wait_for(state='hidden',timeout=12000)
+                        if dialog.count():dialog.first.wait_for(state='hidden',timeout=bounded_ms(12000))
                 # Saving may unmount/remount the modal before updating the header.
                 # Poll both acknowledgment signals, rather than sampling the old ZIP.
                 address_stage='active_address_control' if save_clicked else 'save_address_enabled'
@@ -148,20 +159,21 @@ def establish_location(page, requested_zip, allow_unverified):
                 suggestion_matches=bool(re.search(r'\b'+requested_zip+r'\b',suggestion_text))
                 ack_deadline=time.monotonic()+20
                 while time.monotonic()<ack_deadline:
-                    active=(control.first.get_attribute('aria-label',timeout=1200) or control.first.inner_text(timeout=1200) or '')
+                    active=(control.first.get_attribute('aria-label',timeout=bounded_ms(1200)) or control.first.inner_text(timeout=bounded_ms(1200)) or '')
                     active_matches=street_tokens(active)[:len(tokens)]==tokens
                     address_selected=save_clicked and active_matches and suggestion_matches and not page.get_by_role('dialog').count()
                     if address_selected:
                         page._instasearch_address_confirmation={'zip':requested_zip,'tokens':tokens}
                         break
                     if not save_clicked:break
-                    page.wait_for_timeout(400)
+                    page.wait_for_timeout(bounded_ms(400))
             # A selected suggestion is not proof it was accepted. Read the address control again.
             deadline=time.monotonic()+5
             while time.monotonic()<deadline:
                 observed=observed_location(page)
                 if observed==requested_zip:break
-                page.wait_for_timeout(400)
+                page.wait_for_timeout(bounded_ms(400))
+        except DeadlineExceeded:raise
         except Exception as e:address_failure=type(e).__name__
     observed=observed_location(page)
     verified=observed==requested_zip and (not address or address_selected)
@@ -174,16 +186,16 @@ def establish_location(page, requested_zip, allow_unverified):
         dialogs=page.get_by_role('dialog')
         if dialogs.count():
             dialog=dialogs.first
-            try:text=dialog.inner_text(timeout=2000)
+            try:text=dialog.inner_text(timeout=bounded_ms(2000))
             except Exception:text=''
-            if re.search(r'Enter your email|Log in|Continue with',text,re.I):
+            if classify_dialog(text)=='login_required':
                 raise ConnectorError('login_required','Instacart requires interactive login.')
             if opened_picker or re.search(r'address|delivery|location',text,re.I):
                 close=dialog.get_by_role('button',name=re.compile(r'^close(?:\b|$)',re.I))
                 if close.count():
                     try:
-                        close.first.click(timeout=5000)
-                        dialog.wait_for(state='hidden',timeout=5000)
+                        close.first.click(timeout=bounded_ms(5000))
+                        dialog.wait_for(state='hidden',timeout=bounded_ms(5000))
                     except Exception:pass
     return observed,verified
 
@@ -192,17 +204,17 @@ def wait_for_catalog(page, retailer='', timeout=22, clock=time.monotonic):
     """Wait beyond first paint and require a stable, nonempty retailer/card signature."""
     start=clock();last=None;stable=0;state={'cards':[],'retailers':[]};seen_cards={};seen_retailers={};scroll_index=0
     while clock()-start<timeout:
-        try:body=page.locator('body').inner_text(timeout=2500)
+        try:body=page.locator('body').inner_text(timeout=bounded_ms(2500))
         except Exception:
-            page.wait_for_timeout(750);continue
+            check();page.wait_for_timeout(bounded_ms(750));continue
         if re.search(r'verify you are human|checking your browser|unusual traffic|automated queries|access denied',body,re.I):
             raise ConnectorError('provider_blocked','Instacart is screening this browser. No bypass was attempted.')
         dialogs=page.get_by_role('dialog')
         if dialogs.count():
-            try:text=dialogs.first.inner_text(timeout=2500)
+            try:text=dialogs.first.inner_text(timeout=bounded_ms(2500))
             except Exception:
-                page.wait_for_timeout(750);continue
-            if re.search(r'Enter your email|Log in|Continue with',text,re.I):
+                check();page.wait_for_timeout(bounded_ms(750));continue
+            if classify_dialog(text)=='login_required':
                 raise ConnectorError('login_required','Instacart requires interactive login.')
             raise ConnectorError('location_required','Instacart has an active address form. Confirm location before searching.')
         current=page.evaluate(SNAPSHOT_JS)
@@ -213,10 +225,10 @@ def wait_for_catalog(page, retailer='', timeout=22, clock=time.monotonic):
         # retaining observations in case the page virtualizes previous shelves.
         shelves=page.locator('[role="group"][aria-label="retailer"]')
         if scroll_index<shelves.count():
-            try:shelves.nth(scroll_index).scroll_into_view_if_needed(timeout=2500)
+            try:shelves.nth(scroll_index).scroll_into_view_if_needed(timeout=bounded_ms(2500))
             except Exception:pass
             scroll_index+=1;stable=0
-            page.wait_for_timeout(750)
+            check();page.wait_for_timeout(bounded_ms(750))
             continue
         signature=tuple((c.get('url'),c.get('name'),c.get('text')) for c in state['cards'])+tuple((r['url'],r['name']) for r in state['retailers'])
         stable=stable+1 if signature and signature==last else 0
@@ -225,7 +237,7 @@ def wait_for_catalog(page, retailer='', timeout=22, clock=time.monotonic):
         minimum=4 if retailer else 12
         if state['cards'] and clock()-start>=minimum and stable>=4:
             return state,True
-        page.wait_for_timeout(750)
+        check();page.wait_for_timeout(bounded_ms(750))
     return state,False
 
 
@@ -252,20 +264,22 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
     started=time.monotonic()
     emit('search_started',provider='instacart',query_count=len(queries))
     with sync_playwright() as p:
-        browser=p.chromium.launch(headless=True,args=['--disable-dev-shm-usage'])
+        browser=p.chromium.launch(headless=True,timeout=bounded_ms(30000),args=['--disable-dev-shm-usage'])
         context=browser.new_context(locale='en-US');page=context.new_page();page.set_default_timeout(5000)
         page.route('**/*',lambda route:route.abort() if route.request.resource_type in ('image','media','font') else route.continue_())
         stage='opening provider search'
         try:
             for query in queries:
+                check()
                 if items and time.monotonic()-started>90:
                     warnings.append('Request time budget reached; remaining queries were not fetched. Retry missing queries separately.')
                     break
                 stage='opening provider search'
                 phase_started=time.monotonic()
                 emit('search_stage',provider='instacart',stage=stage)
-                url='https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query)
-                page.goto(url,wait_until='commit',timeout=35000)
+                bootstrap_address=bool(retailer and current_location(zip_code).get('address'))
+                url='https://www.instacart.com/store/'+(retailer+'/' if retailer and not bootstrap_address else '')+'s?k='+quote(query)
+                page.goto(url,wait_until='commit',timeout=bounded_ms(35000))
                 emit('search_stage_complete',provider='instacart',stage=stage,duration_ms=round((time.monotonic()-phase_started)*1000))
                 stage='confirming address control'
                 phase_started=time.monotonic()
@@ -275,6 +289,15 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                 stage='waiting for retailer shelves to stabilize'
                 phase_started=time.monotonic()
                 emit('search_stage',provider='instacart',stage=stage)
+                if bootstrap_address:
+                    links=page.locator('a[href]')
+                    target=None
+                    for n in range(min(links.count(),300)):
+                        href=links.nth(n).get_attribute('href') or ''
+                        if re.match(r'^/store/'+re.escape(retailer)+r'/s(?:\?|$)',href):target=links.nth(n);break
+                    if target is None:raise ConnectorError('retailer_unavailable','Requested retailer navigation is not visible in the confirmed context.')
+                    target.click(timeout=bounded_ms(5000))
+                    page.wait_for_timeout(bounded_ms(500))
                 state,settled=wait_for_catalog(page,retailer)
                 emit('search_stage_complete',provider='instacart',stage=stage,duration_ms=round((time.monotonic()-phase_started)*1000))
                 # Recheck after hydration/search; never carry verification from a previous query.
@@ -293,8 +316,8 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
             if not items:raise ConnectorError('no_results','No readable products matched the selected retailer. This is not proof of no stock.')
             for r in retailers.values():r['products_returned']=sum(i['retailer']==r['id'] for i in items)
             observed_values={o for o,v in locations}
-            return {'items':items,'location':{'requested_zip':zip_code,'observed_zip':next(iter(observed_values)) if len(observed_values)==1 else None,'verified':all(v for o,v in locations),'context_id':context_id(current_location(zip_code)),'address_selected':bool(current_location(zip_code).get('address')) and all(v for o,v in locations),'verification_method':'active_address_control','verification_scope':'zip_only','delivery_serviceability_verified':False,'store_branch_verified':False},'retailers':list(retailers.values()),'diagnostics':diagnostics,'warnings':list(dict.fromkeys(warnings))}
-        except BrowserTimeout:
+            return {'items':items,'location':{'requested_zip':zip_code,'observed_zip':next(iter(observed_values)) if len(observed_values)==1 else None,'verified':all(v for o,v in locations),'context_id':context_id(current_location(zip_code)),'address_selected':bool(current_location(zip_code).get('address')) and all(v for o,v in locations),'verification_method':'active_address_control','verification_scope':'zip_only','delivery_serviceability_verified':False,'store_branch_verified':False},'direct_local_supported':False,'coverage_complete':False,'coverage_scope':{'kind':'visible_shelves','retailer':retailer or '*','limit':500},'retailers':list(retailers.values()),'diagnostics':diagnostics,'warnings':list(dict.fromkeys(warnings))}
+        except (BrowserTimeout,DeadlineExceeded):
             emit('search_failed',provider='instacart',stage=stage,status='provider_timeout',duration_ms=round((time.monotonic()-started)*1000))
             raise ConnectorError('provider_timeout','Instacart timed out while '+stage+'.')
         except ConnectorError as e:
