@@ -1,4 +1,5 @@
 from search_jobs import SearchJobs, JobError
+from refresh_planner import RefreshPlanner, policy_enabled
 import cancellation
 from operator_access import ensure_credential
 import hmac
@@ -23,10 +24,13 @@ ROOT = Path(__file__).parent
 LOCK = PriorityLock()
 RESULTS = ResultStore()
 RATE = {}
-CACHE = SearchCache(ttl=300)
+FRESHNESS_V07=policy_enabled(ROOT)
+CACHE = SearchCache(ttl=300,independent_expiry=FRESHNESS_V07)
 INVALIDATIONS = {}
 CATALOG = Catalog(os.getenv('CATALOG_PATH',str(Path(os.getenv('RENDER_DISK_MOUNT_PATH','/tmp'))/'alambda-grocery-catalog.sqlite')))
 CACHE.attach(CATALOG,'instacart')
+PLANNER=RefreshPlanner(CACHE) if FRESHNESS_V07 else None
+CACHE.refresh_planner=PLANNER
 OPERATOR_KEY=ensure_credential(CATALOG.path)
 INGESTOR = None
 JOBS=SearchJobs()
@@ -101,7 +105,7 @@ class Handler(BaseHTTPRequestHandler):
                 with CATALOG.db() as db:db.execute('SELECT 1').fetchone()
                 return self.send(200,{'status':'ready','storage_available':Path(CATALOG.path).exists(),'persistent_mount_configured':bool(os.getenv('RENDER_DISK_MOUNT_PATH'))})
             except Exception:return self.send(503,{'status':'not_ready','message':'Catalog storage unavailable'})
-        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.6.0'})
+        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.7.0','freshness_v07':FRESHNESS_V07})
         if self.path=='/openapi.json': return self.send(200,SPEC)
         if route.path in ('/docs','/swagger','/android-contract.md','/instasearch-contract.md'):
             filename='android-contract.md' if route.path in ('/android-contract.md','/instasearch-contract.md') else 'swagger.html'
@@ -137,7 +141,7 @@ class Handler(BaseHTTPRequestHandler):
                     value,meta=merge_parts(parts,hits,fetched);deadline.check();sid=str(uuid.uuid4())
                     if missing:meta.update(hit=False,partial_hit=True)
                     value.update(search_id=sid,status='partial' if missing else 'ok',missing_queries=missing,cache=meta,expires_in=meta['expires_in'],cart_updated=False)
-                    RESULTS[sid]={'created':time.time(),'expires':time.time()+meta['expires_in'],'payload':value}
+                    RESULTS[sid]={'created':time.time(),'expires':time.time()+meta['expires_in'],'payload':value,'request_location':current_location(z)}
                     return value
                 try:return self.send(202,JOBS.submit(work))
                 except JobError as e:return self.send(e.http,{'error':e.code,'message':e.message})
@@ -213,7 +217,9 @@ class Handler(BaseHTTPRequestHandler):
                 if INGESTOR:
                     for item in selected:
                         location=RESULTS.get(item['search_id'])['payload'].get('location',{})
-                        if location.get('requested_zip') and item.get('query'):INGESTOR.observe(location['requested_zip'],[item['query']],item.get('retailer',''))
+                        request=RESULTS.get(item['search_id']).get('request_location',{})
+                        if PLANNER:PLANNER.promote(location,[item])
+                        if location.get('requested_zip') and item.get('query') and not request.get('address') and not request.get('coordinates'):INGESTOR.observe(location['requested_zip'],[item['query']],item.get('retailer',''))
                 return self.send(200,{'items':selected,'item_count':sum(i['quantity'] for i in selected),'subtotal':float(sum((Decimal(str(i['line_total'])) for i in selected),Decimal('0')).quantize(Decimal('0.01'))),'currency':'USD','cart_updated':False,'provider_cart_updated':False,'location_verified':all(i['location_verified'] for i in selected) if selected else False,'message':'Local app cart validated. Taxes, fees, and provider cart are not included.'})
             if self.path=='/api/v1/select':
                 result=RESULTS.get(data.get('search_id',''))
@@ -223,6 +229,7 @@ class Handler(BaseHTTPRequestHandler):
                 products={p['id']:p for p in result['payload']['items']}
                 if any(i not in products for i in ids): raise ValueError('Unknown product ID for this search.')
                 selected=[products[i] for i in dict.fromkeys(ids)]
+                if PLANNER:PLANNER.promote(result['payload']['location'],selected)
                 return self.send(200,{'selection_id':str(uuid.uuid4()),'items':selected,'subtotal':float(sum((Decimal(str(p['price'])) for p in selected),Decimal('0')).quantize(Decimal('0.01'))),'currency':'USD','cart_updated':False,'location':result['payload']['location'],'message':'Selection only. Provider cart is unchanged.'})
             if self.path!='/api/v1/search': return self.send(404,{'error':'not_found'})
             if 'providers' in data:return self.send(422,{'error':'invalid_request','message':'Use /api/v1/compare to select providers.'})
@@ -244,7 +251,7 @@ class Handler(BaseHTTPRequestHandler):
                 payload,meta=merge_parts(parts,hits,fetched)
                 if missing:meta.update(hit=False,partial_hit=True)
                 sid=str(uuid.uuid4());payload.update(search_id=sid,status='partial' if missing else 'ok',missing_queries=missing,cache=meta,expires_in=meta['expires_in'],cart_updated=False)
-                RESULTS[sid]={'created':time.time(),'expires':time.time()+meta['expires_in'],'payload':payload}
+                RESULTS[sid]={'created':time.time(),'expires':time.time()+meta['expires_in'],'payload':payload,'request_location':current_location(z)}
                 return self.send(200,payload)
             except ConnectorError as e:
                 emit('search_failed',provider='instacart',status=e.status)

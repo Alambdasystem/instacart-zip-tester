@@ -115,3 +115,14 @@ Optional authorized provider state: operator supplies `INSTACART_STORAGE_STATE_P
 Pagination follows visible retailer carousel / navigation Next page controls, with four actions by default (`INSTACART_PAGE_ACTION_LIMIT`, bounded 0–12), 500 cards and the request deadline. Diagnostics report actions, new-card counts and stopping reason. These bounded observations do not establish complete inventory. Product fields add `price_basis`, nullable `unit_price`, `promotion_text`, `size_status` and `variants_status`; absent variants remain not_exposed.
 
 Storage v6 keeps normalized product, offer, context and scheduler-job tables with an additive native backup before migration. Legacy rows/snapshots are retained for rollback. API, comparisons and ingestion use the shared search resolver. Hard process cancellation is Linux-specific.
+
+
+## v0.7: browsing and demand-based refresh
+
+The existing search, selection and cart models remain compatible. An optional server-side freshness policy gives each new Instacart snapshot its own five-minute expiry; explicit retailer/ZIP invalidation still expires matching snapshots and quotes. Other providers retain their existing policy.
+
+For a fast browsing screen, first call GET /api/v1/catalog with ZIP/query/provider and display names/images. `last_seen_price` and `price_status` describe a historical observation. Stale or context-incompatible observations must not be selectable. For an address search, a ZIP catalog preview is not proof of delivery or the selected address. Then use the normal search or cancellable job flow to obtain fresh compatible quotes. Never fall back to expired prices for cart validation.
+
+Recent successful auto/refresh searches and current basket selections can enter a bounded demand refresh set. Capacity is computed from measured fetch time and reserves foreground/discovery work. `cache_only` performs no upstream fetch and does not schedule one. No refresh timing or availability is guaranteed across provider failures, login restrictions or overloaded capacity.
+
+Background refresh does not extend or replace an already issued `search_id`. After expiry, call search again and use the new compatible item/search IDs for selection/cart. Existing HTTP 409 `price_expired` remains authoritative. Precise refresh contexts are held only in bounded memory for 15 minutes of inactivity and are lost on restart.

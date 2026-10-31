@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "InstaSearch API Contract",
-    "version": "0.6.0",
-    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. Local baskets and provider links do not transfer items or place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels."
+    "version": "0.7.0",
+    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. Local baskets and provider links do not transfer items or place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels. Optional v0.7 freshness scheduling preserves five-minute quote expiry. Catalog descriptions remain browsable with expired prices explicitly labeled; background refresh never renews an existing search_id. Cache-only never schedules refresh."
   },
   "servers": [
     {
@@ -942,6 +942,21 @@
               "amount",
               "unit"
             ]
+          },
+          "last_seen_price": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Historical observed price; not permission to quote or add an expired offer."
+          },
+          "price_status": {
+            "type": "string",
+            "enum": [
+              "fresh",
+              "expired"
+            ],
+            "description": "Catalog observation freshness; selection additionally requires compatible provider context."
           }
         },
         "required": [
@@ -1481,6 +1496,10 @@
           },
           "version": {
             "type": "string"
+          },
+          "freshness_v07": {
+            "type": "boolean",
+            "description": "Whether the optional Instacart freshness policy is enabled."
           }
         },
         "required": [
@@ -1491,7 +1510,13 @@
       "IngestionStatus": {
         "type": "object",
         "description": "Operational diagnostic counters. Fields may expand; not an Android commerce model.",
-        "additionalProperties": true
+        "additionalProperties": true,
+        "properties": {
+          "hot_refresh": {
+            "type": "object",
+            "description": "Sanitized admitted refresh capacity and pending demand. Private addresses are not included."
+          }
+        }
       },
       "ComparisonItem": {
         "type": "object",

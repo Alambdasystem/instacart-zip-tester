@@ -70,9 +70,14 @@ class Catalog:
         try:
             with connection:yield connection
         finally:connection.close()
-    def ingest(self,zip_code,query,payload,ttl,now=None):
+    def ingest(self,zip_code,query,payload,ttl,now=None,cache_fence=None):
         now=time.time() if now is None else now
         with self.db() as db:
+            if cache_fence is not None:
+                namespace,z,expected=cache_fence
+                db.execute('BEGIN IMMEDIATE')
+                actual=tuple((db.execute('SELECT generation FROM cache_fences WHERE namespace=? AND scope=?',(namespace,scope)).fetchone() or (0,))[0] for scope in ('*',z))
+                if actual!=expected:raise ConnectorError('cache_invalidated','Store invalidated during fetch; catalog write rejected.')
             for item in payload['items']:
                 provider=item.get('provider',payload.get('provider','instacart'))
                 identity=((item.get('url') or '').split('?')[0] or item['name']+'|'+str(item.get('size')))+'|'+item.get('retailer','')+'|'+zip_code
@@ -108,7 +113,7 @@ class Catalog:
                 import re
                 if query and not any(matches_query(p['name'],q) for q in queries):continue
                 if query and re.search(r'\b(conditioner|shampoo|body wash|soap|lotion|lip balm|detergent|moisturizer)\b',p['name'],re.I):continue
-                p.update({'age_seconds':max(0,int(now-seen)),'price_fresh':now<expires,'price_expires_in':max(0,int(expires-now)),'last_seen':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(seen))})
+                p.update({'age_seconds':max(0,int(now-seen)),'price_fresh':now<expires,'price_expires_in':max(0,int(expires-now)),'last_seen_price':p.get('price'),'price_status':'fresh' if now<expires else 'expired','last_seen':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(seen))})
                 output.append(p)
                 if len(output)>=limit:break
         return output
@@ -159,6 +164,7 @@ class Catalog:
 class Ingestor:
     def __init__(self,catalog,cache,browser_lock,fetch,queries=None,zip_code='63129',retailer='',clock=time.time):
         self.catalog,self.cache,self.browser_lock,self.fetch=catalog,cache,browser_lock,fetch
+        self.planner=getattr(cache,'refresh_planner',None);self.refresh_turn=0
         self.zip,self.retailer,self.clock=zip_code,retailer,clock
         self.jobs=[{'query':q,'zip':zip_code,'retailer':retailer,'requests':0,'next_due':0,'successes':0,'failures':0,'last_status':'queued','last_success':None} for q in (SEEDS if queries is None else queries)[:MAX_QUERIES_PER_ZIP]]
         self.state_key='ingestor:'+zip_code+':'+retailer
@@ -263,7 +269,7 @@ class Ingestor:
         with self.mutex:
             now=self.clock()
             eligible=sum(self.context_key(j['zip'],j['retailer']) not in self.blocked_contexts for j in self.jobs)
-            return {'enabled':True,'running':not self.stop.is_set() and self.pause_reason is None and eligible>0,'eligible_jobs':eligible,'work_state':'stopped' if self.stop.is_set() else 'provider_paused' if self.pause_reason else 'no_eligible_jobs' if not eligible else 'fetching' if self.active else 'scheduled','paused_reason':self.pause_reason,'blocked_contexts':list(self.blocked_contexts.values()),'blocked_jobs':sum(self.context_key(j['zip'],j['retailer']) in self.blocked_contexts for j in self.jobs),'active_query':self.active,'zip':self.zip,'retailer':self.retailer or 'provider default','location_verified':False,'seed_type':'expanded curated foods and restaurant discovery probes; not measured popularity', 'search_groups':SEARCH_GROUPS, 'retailer_discovery_targets':RETAILER_DISCOVERY_TARGETS, 'restaurant_discovery_note':'Search matches do not verify restaurant menus, ordering support, or local availability','footprint':{'zip_codes':sorted({j['zip'] for j in self.jobs}),'zip_count':len({j['zip'] for j in self.jobs}),'unique_queries':len({j['query'] for j in self.jobs}),'jobs':len(self.jobs),'max_zip_codes':5,'max_jobs':MAX_JOBS,'max_queries_per_zip_retailer':MAX_QUERIES_PER_ZIP},'scheduler':{'tiers':{tier:sum(self.tier(j)==tier for j in self.jobs) for tier in ['hot','warm','discovery']},'refresh_targets_seconds':{'hot':240,'warm':1800,'discovery':21600},'discovery_reserved_share':0.2},'queue_pagination':{'offset':offset,'limit':limit,'total':len(self.jobs),'next_offset':offset+limit if limit is not None and offset+limit<len(self.jobs) else None},'queue':[dict(j,tier=self.tier(j),refresh_in_seconds=max(0,int(j['next_due']-now))) for j in self.jobs[offset:None if limit is None else offset+limit]],'last_error':self.last_error,'circuit':self.circuit or ({'reason':self.pause_reason,'evidence':'legacy_unavailable'} if self.pause_reason else None),'heartbeat':self.heartbeat,'throughput':{'sample_jobs':len(self.durations),'mean_job_seconds':round(sum(self.durations)/len(self.durations),2) if self.durations else None,'estimated_cycle_seconds':round(len(self.jobs)*(sum(self.durations)/len(self.durations)+15)) if self.durations else None,'estimate_scope':'single browser, includes post-job delay, excludes foreground contention and failures'},'attempts_last_hour':len([t for t in self.attempts if now-t<3600]),'hourly_budget':120,'storage':{'engine':'sqlite','path':self.catalog.path,'persistent_mount_configured':bool(os.getenv('RENDER_DISK_MOUNT_PATH'))},'resources':{'python_peak_rss_mb':round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024,1),'finished_children_peak_rss_mb':round(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss/1024,1),'catalog_bytes':Path(self.catalog.path).stat().st_size,'free_disk_mb':round(shutil.disk_usage(Path(self.catalog.path).parent).free/1048576)},'catalog':self.catalog.counts()}
+            return {'enabled':True,'running':not self.stop.is_set() and self.pause_reason is None and eligible>0,'eligible_jobs':eligible,'work_state':'stopped' if self.stop.is_set() else 'provider_paused' if self.pause_reason else 'no_eligible_jobs' if not eligible else 'fetching' if self.active else 'scheduled','paused_reason':self.pause_reason,'blocked_contexts':list(self.blocked_contexts.values()),'blocked_jobs':sum(self.context_key(j['zip'],j['retailer']) in self.blocked_contexts for j in self.jobs),'active_query':self.active,'zip':self.zip,'retailer':self.retailer or 'provider default','location_verified':False,'seed_type':'expanded curated foods and restaurant discovery probes; not measured popularity', 'search_groups':SEARCH_GROUPS, 'retailer_discovery_targets':RETAILER_DISCOVERY_TARGETS, 'restaurant_discovery_note':'Search matches do not verify restaurant menus, ordering support, or local availability','footprint':{'zip_codes':sorted({j['zip'] for j in self.jobs}),'zip_count':len({j['zip'] for j in self.jobs}),'unique_queries':len({j['query'] for j in self.jobs}),'jobs':len(self.jobs),'max_zip_codes':5,'max_jobs':MAX_JOBS,'max_queries_per_zip_retailer':MAX_QUERIES_PER_ZIP},'hot_refresh':self.planner.status(sum(self.durations)/len(self.durations) if self.durations else 60) if self.planner else {'enabled':False},'scheduler':{'tiers':{tier:sum(self.tier(j)==tier for j in self.jobs) for tier in ['hot','warm','discovery']},'refresh_targets_seconds':{'hot':240,'warm':1800,'discovery':21600},'discovery_reserved_share':0.2},'queue_pagination':{'offset':offset,'limit':limit,'total':len(self.jobs),'next_offset':offset+limit if limit is not None and offset+limit<len(self.jobs) else None},'queue':[dict(j,tier=self.tier(j),refresh_in_seconds=max(0,int(j['next_due']-now))) for j in self.jobs[offset:None if limit is None else offset+limit]],'last_error':self.last_error,'circuit':self.circuit or ({'reason':self.pause_reason,'evidence':'legacy_unavailable'} if self.pause_reason else None),'heartbeat':self.heartbeat,'throughput':{'sample_jobs':len(self.durations),'mean_job_seconds':round(sum(self.durations)/len(self.durations),2) if self.durations else None,'estimated_cycle_seconds':round(len(self.jobs)*(sum(self.durations)/len(self.durations)+15)) if self.durations else None,'estimate_scope':'single browser, includes post-job delay, excludes foreground contention and failures'},'attempts_last_hour':len([t for t in self.attempts if now-t<3600]),'hourly_budget':120,'storage':{'engine':'sqlite','path':self.catalog.path,'persistent_mount_configured':bool(os.getenv('RENDER_DISK_MOUNT_PATH'))},'resources':{'python_peak_rss_mb':round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024,1),'finished_children_peak_rss_mb':round(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss/1024,1),'catalog_bytes':Path(self.catalog.path).stat().st_size,'free_disk_mb':round(shutil.disk_usage(Path(self.catalog.path).parent).free/1048576)},'catalog':self.catalog.counts()}
     def tick(self):
         now=self.clock();self.heartbeat=now
         with self.mutex:
@@ -271,20 +277,28 @@ class Ingestor:
             self.attempts=[t for t in self.attempts if now-t<3600]
             if len(self.attempts)>=120:return False
             due=[j for j in self.jobs if j['next_due']<=now and self.context_key(j['zip'],j['retailer']) not in self.blocked_contexts]
-            if not due:return False
-            job=self.choose_job(due)
+            mean=sum(self.durations)/len(self.durations) if self.durations else 60
+            hot=self.planner.pick(mean,lambda j:self.context_key(j['zip'],j['retailer']) in self.blocked_contexts) if self.planner else None
+            if not due and not hot:return False
+            self.refresh_turn+=1
+            urgent=hot and hot.get('_expires',now)-now<mean+30
+            job=hot if hot and (not due or self.refresh_turn%5!=0 or urgent) else self.choose_job(due)
+        is_refresh='_refresh_key' in job
+        flag=job.get('_allow',True)
+        set_location(job.get('_location',{'postal_code':job['zip'],'country_code':'US'}))
+        if is_refresh and self.cache.key(job['zip'],[job['query']],job['retailer'],flag)!=job['_refresh_key']:
+            self.planner.failed(job,'provider_context_changed');return False
         # New demand may make a job due while its exact snapshot is fresh.
         # Preserve expiry; reserve the browser for misses and near-expiry refreshes.
-        set_location({'postal_code':job['zip'],'country_code':'US'})
-        try:snapshot=self.cache.get(self.cache.key(job['zip'],[job['query']],job['retailer'],True))
+        try:snapshot=self.cache.get(self.cache.key(job['zip'],[job['query']],job['retailer'],flag))
         except Exception:
             with self.mutex:self.last_error={'status':'cache_unavailable','message':'Background cache read failed; provider fetch deferred.'}
             emit('ingestion_cache_unavailable',provider='instacart')
             return False
-        if snapshot and snapshot[1]['expires_in']>60:
+        if snapshot and snapshot[1]['expires_in']>(135 if is_refresh else 60):
             meta=snapshot[1]
             with self.mutex:
-                job.update(last_status='fresh_cache',next_due=now+meta['expires_in']-60)
+                job.update(last_status='fresh_cache',next_due=now+meta['expires_in']-(135 if is_refresh else 60))
                 self.persist()
             return False
         if not self.browser_lock.acquire(blocking=False):return False
@@ -293,18 +307,20 @@ class Ingestor:
         started=time.monotonic()
         try:
             with self.mutex:self.active=job['zip']+' / '+job['query'];self.attempts.append(now);job['last_status']='fetching';job['last_attempt']=now;self.persist()
-            set_location({'postal_code':job['zip'],'country_code':'US'})
-            entries,_,_,_=SearchService(self.catalog,self.cache,self.browser_lock,self.fetch).resolve(job['zip'],[job['query']],job['retailer'],True,'refresh',locked=True)
+            set_location(job.get('_location',{'postal_code':job['zip'],'country_code':'US'}))
+            entries,_,_,_=SearchService(self.catalog,self.cache,self.browser_lock,self.fetch).resolve(job['zip'],[job['query']],job['retailer'],flag,'refresh',locked=True)
             if not entries:raise ConnectorError('no_results','No priced products were returned.')
             stamp=self.clock()
             with self.mutex:
                 interval={'hot':240,'warm':1800,'discovery':21600}[self.tier(job)]
                 job.update({'next_due':stamp+interval,'successes':job['successes']+1,'failures':0,'last_status':'ready','last_success':stamp});self.last_error=None;self.durations.append(time.monotonic()-started);self.durations=self.durations[-50:]
+                if is_refresh:self.planner.completed(job,entries[0][1])
             return True
         except ConnectorError as e:
             with self.mutex:
                 job['failures']+=1;job['last_status']=e.status
                 job['next_due']=self.clock()+min(1800,60*(2**min(job['failures']-1,5)))
+                if is_refresh:self.planner.failed(job,e.status)
                 self.last_error={'query':job['query'],'status':e.status,'message':e.message}
                 emit('ingestion_failed',provider='instacart',status=e.status)
                 if e.status=='login_required':

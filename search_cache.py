@@ -1,20 +1,26 @@
 """Thread-safe, bounded, non-sliding search cache with store-wide expiry."""
 from provider_session import cache_scope as session_scope
 from copy import deepcopy
-import threading, time, json
+import threading, time, json, uuid
 from location_context import current_location, context_id
 
 class SearchCache:
-    def __init__(self, ttl=300, max_entries=100, clock=time.time):
+    def __init__(self, ttl=300, max_entries=100, clock=time.time, independent_expiry=False):
         self.ttl, self.max_entries, self.clock = ttl, max_entries, clock
         self.entries, self.groups = {}, {}
         self.lock = threading.RLock()
         self.catalog=None;self.namespace="instacart"
+        self.independent_expiry=independent_expiry
+        self.refresh_planner=None
+        self.fences={}
+    @property
+    def independent(self):return self.independent_expiry and self.namespace=='instacart'
     def attach(self,catalog,namespace):
         self.catalog,self.namespace=catalog,namespace
         with catalog.db() as db:
             db.execute("CREATE TABLE IF NOT EXISTS search_snapshots (namespace TEXT, key TEXT, expires REAL, payload TEXT, PRIMARY KEY(namespace,key))")
             db.execute("CREATE TABLE IF NOT EXISTS cache_epochs (namespace TEXT, group_key TEXT, expires REAL, PRIMARY KEY(namespace,group_key))")
+            db.execute('CREATE TABLE IF NOT EXISTS cache_fences(namespace TEXT, scope TEXT, generation INTEGER, PRIMARY KEY(namespace,scope))')
         return self
     def _persist(self,key,entry):
         if self.catalog:
@@ -23,10 +29,18 @@ class SearchCache:
                 db.execute("DELETE FROM search_snapshots WHERE expires<=?",(self.clock(),))
                 db.execute('DELETE FROM search_snapshots WHERE namespace=? AND key NOT IN (SELECT key FROM search_snapshots WHERE namespace=? ORDER BY expires DESC LIMIT ?)',(self.namespace,self.namespace,self.max_entries))
     def key(self, zip_code, queries, retailer, allow_unverified):
-        return (zip_code, tuple(sorted(set(' '.join(q.casefold().split()) for q in queries))), retailer or '*', allow_unverified, 'v06.0:'+context_id(current_location(zip_code))+(':'+session_scope() if self.namespace=='instacart' else ''))
+        return (zip_code, tuple(sorted(set(' '.join(q.casefold().split()) for q in queries))), retailer or '*', allow_unverified, ('v07.0:' if self.independent else 'v06.0:')+context_id(current_location(zip_code))+(':'+session_scope() if self.namespace=='instacart' else ''))
+    def fence(self,z,db=None):
+        if not self.independent:return None
+        if db is not None:
+            return tuple((db.execute('SELECT generation FROM cache_fences WHERE namespace=? AND scope=?',(self.namespace,s)).fetchone() or (0,))[0] for s in ('*',z))
+        with self.lock:
+            if self.catalog:
+                with self.catalog.db() as connection:return self.fence(z,connection)
+            return (self.fences.get('*',0),self.fences.get(z,0))
     def _prune(self):
         now=self.clock()
-        expired_groups={g for g,expires in self.groups.items() if expires<=now}
+        expired_groups=set() if self.independent else {g for g,expires in self.groups.items() if expires<=now}
         for key,entry in list(self.entries.items()):
             if entry['expires']<=now or entry['groups'] & expired_groups:
                 self.entries.pop(key,None)
@@ -43,13 +57,32 @@ class SearchCache:
                     if size<=2_000_000:
                         while self.entries and (len(self.entries)>=self.max_entries or sum(v.get('bytes',0) for v in self.entries.values())+size>8_000_000):self.entries.pop(next(iter(self.entries)))
                         self.entries[key]={**entry,'bytes':size}
-                        for group in entry['groups']:self.groups[group]=entry['expires']
+                        if not self.independent:
+                            for group in entry['groups']:self.groups[group]=entry['expires']
             if not entry:return None
-            return deepcopy(entry['payload']), {'hit':True,'source':source,'age_seconds':int(self.clock()-entry['created']),'expires_in':max(0,int(entry['expires']-self.clock())),'ttl_seconds':self.ttl}
-    def put(self,key,payload):
+            return deepcopy(entry['payload']), {'hit':True,'source':source,'age_seconds':int(self.clock()-entry['created']),'expires_in':max(0,int(entry['expires']-self.clock())),'ttl_seconds':self.ttl,'snapshot_id':entry.get('snapshot_id'),'refresh_in':max(0,int(entry['expires']-self.clock()-120))}
+    def put(self,key,payload,expected_fence=None):
         with self.lock:
             self._prune();now=self.clock()
             groups={(key[0],p.get('retailer') or key[2],key[4]) for p in payload['items']} or {(key[0],key[2],key[4])}
+            if self.independent:
+                expires=now+self.ttl
+                entry={'bytes':len(json.dumps(payload).encode()),'payload':deepcopy(payload),'created':now,'expires':expires,'groups':groups,'snapshot_id':uuid.uuid4().hex}
+                if entry['bytes']>2_000_000:raise ValueError('Search snapshot exceeds cache size limit.')
+                if self.catalog:
+                    with self.catalog.db() as db:
+                        db.execute('BEGIN IMMEDIATE')
+                        if expected_fence is not None and self.fence(key[0],db)!=expected_fence:
+                            from connector import ConnectorError
+                            raise ConnectorError('cache_invalidated','Store invalidated during fetch; retry with fresh context.')
+                        db.execute('INSERT OR REPLACE INTO search_snapshots VALUES(?,?,?,?)',(self.namespace,json.dumps(key),expires,json.dumps({**entry,'groups':list(groups)})))
+                        db.execute('DELETE FROM search_snapshots WHERE namespace=? AND (expires<=? OR key NOT IN (SELECT key FROM search_snapshots WHERE namespace=? ORDER BY expires DESC LIMIT ?))',(self.namespace,now,self.namespace,self.max_entries))
+                elif expected_fence is not None and self.fence(key[0])!=expected_fence:
+                    from connector import ConnectorError
+                    raise ConnectorError('cache_invalidated','Store invalidated during fetch; retry with fresh context.')
+                while self.entries and (len(self.entries)>=self.max_entries or sum(v.get('bytes',0) for v in self.entries.values())+entry['bytes']>8_000_000):self.entries.pop(next(iter(self.entries)))
+                self.entries[key]=entry
+                return {'hit':False,'source':'live','age_seconds':0,'expires_in':self.ttl,'ttl_seconds':self.ttl,'snapshot_id':entry['snapshot_id'],'refresh_in':max(0,self.ttl-120)}
             if self.catalog:
                 with self.catalog.db() as db:
                     db.execute('BEGIN IMMEDIATE')
@@ -66,12 +99,17 @@ class SearchCache:
             encoded_size=len(json.dumps(payload).encode())
             if encoded_size>2_000_000:raise ValueError('Search snapshot exceeds cache size limit.')
             while self.entries and sum(v.get('bytes',0) for v in self.entries.values())+encoded_size>8_000_000:self.entries.pop(next(iter(self.entries)))
-            self.entries[key]={'bytes':encoded_size,'payload':deepcopy(payload),'created':now,'expires':expires,'groups':groups}
+            self.entries[key]={'bytes':encoded_size,'payload':deepcopy(payload),'created':now,'expires':expires,'groups':groups,'snapshot_id':uuid.uuid4().hex}
             self._persist(key,self.entries[key])
             return {'hit':False,'source':'live','age_seconds':0,'expires_in':max(0,int(expires-now)),'ttl_seconds':self.ttl}
     def invalidate(self,retailer,zip_code=None):
         with self.lock:
             self._prune();removed=0
+            if self.independent:
+                scope=zip_code or '*'
+                self.fences[scope]=self.fences.get(scope,0)+1
+                if self.catalog:
+                    with self.catalog.db() as db:db.execute('INSERT INTO cache_fences VALUES(?,?,1) ON CONFLICT(namespace,scope) DO UPDATE SET generation=generation+1',(self.namespace,scope))
             for key,entry in list(self.entries.items()):
                 if any((store==retailer or retailer=='*') and (zip_code is None or z==zip_code) for z,store,*_ in entry['groups']):
                     self.entries.pop(key,None);removed+=1

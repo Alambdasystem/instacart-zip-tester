@@ -22,6 +22,8 @@ class SearchService:
         self.catalog,self.cache,self.lock,self.fetch,self.provider=catalog,cache,lock,fetch,provider
     def resolve(self,z,queries,store,allow,mode='auto',before_live=None,locked=False):
         entries={};hits=[];missing=[];fetched=[];failure=None
+        coalesce=self.cache.independent
+        initial={q:self.cache.get(self.cache.key(z,[q],store,allow)) for q in queries} if mode=='refresh' and coalesce else {}
         def compatible(payload):
             ctx=payload.get('location',{}).get('context_id')
             return self.provider!='instacart' or not ctx or ctx==request_context_id(current_location(z))
@@ -35,6 +37,9 @@ class SearchService:
                 meta={**meta,'source':entries[q][1].get('source',meta.get('source','live'))}
                 if failure:payload={**payload,'partial_errors':[failure],'warnings':payload.get('warnings',[])+[failure['message']]}
                 parts.append((payload,meta))
+                planner=getattr(self.cache,'refresh_planner',None)
+                if planner and not locked and mode not in ('cache_only','catalog') and not payload.get('error'):
+                    planner.observe(z,q,store,allow,meta)
                 if payload['items']:covered.add(q)
             return parts,[q for q in hits if q in covered],[q for q in fetched if q in covered],[q for q in queries if q not in covered]
         for q in queries:
@@ -42,18 +47,22 @@ class SearchService:
             if entry and compatible(entry[0]):entries[q]=entry;hits.append(q)
             else:missing.append(q)
         if not missing or mode=='cache_only':return finish()
-        if before_live:before_live()
+        if before_live and not coalesce:before_live()
         acquired=False
         if not locked:
             started=time.monotonic()
             if not self.lock.acquire(timeout=deadline.bounded_seconds(15)):raise ConnectorError('busy','Provider is occupied. Retry shortly.')
             acquired=True;emit('browser_queue',provider=self.provider,duration_ms=round((time.monotonic()-started)*1000))
         try:
-            if mode!='refresh':
-                for q in list(missing):
-                    entry=self.cache.get(self.cache.key(z,[q],store,allow))
-                    if entry and compatible(entry[0]):entries[q]=entry;hits.append(q);missing.remove(q)
+            for q in list(missing):
+                if mode=='refresh' and not coalesce:continue
+                entry=self.cache.get(self.cache.key(z,[q],store,allow))
+                old=initial.get(q)
+                changed=entry and entry[1].get('snapshot_id') and (not old or entry[1]['snapshot_id']!=old[1].get('snapshot_id'))
+                if entry and compatible(entry[0]) and (mode!='refresh' or changed):entries[q]=entry;hits.append(q);missing.remove(q)
             if missing:
+                if before_live and coalesce:before_live()
+                fence=self.cache.fence(z)
                 try:payload=self.fetch(z,list(missing),store,allow)
                 except (ConnectorError,deadline.DeadlineExceeded) as error:
                     if not entries:raise
@@ -65,8 +74,10 @@ class SearchService:
                     normalized=' '.join(q.casefold().split())
                     subset={**payload,'items':[i for i in payload['items'] if len(missing)==1 or ' '.join(i.get('query','').casefold().split())==normalized]}
                     if not subset['items'] and not payload.get('error'):continue
-                    meta={'hit':False,'source':'live','age_seconds':0,'expires_in':0,'ttl_seconds':300} if payload.get('error') else self.cache.put(self.cache.key(z,[q],store,allow),subset)
-                    if not payload.get('error'):self.catalog.ingest(z,q,subset,meta['expires_in'])
+                    meta={'hit':False,'source':'live','age_seconds':0,'expires_in':0,'ttl_seconds':300} if payload.get('error') else self.cache.put(self.cache.key(z,[q],store,allow),subset,expected_fence=fence)
+                    if not payload.get('error'):
+                        kwargs={'cache_fence':(self.cache.namespace,z,fence)} if fence is not None else {}
+                        self.catalog.ingest(z,q,subset,meta['expires_in'],**kwargs)
                     entries[q]=(subset,meta);fetched.append(q)
             return finish()
         finally:
