@@ -295,13 +295,14 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                 phase_started=time.monotonic()
                 emit('search_stage',provider='instacart',stage=stage)
                 if bootstrap_address:
-                    links=page.locator('a[href]')
-                    target=None
-                    for n in range(min(links.count(),300)):
-                        href=links.nth(n).get_attribute('href') or ''
-                        if re.match(r'^/store/'+re.escape(retailer)+r'/s(?:\?|$)',href):target=links.nth(n);break
-                    if target is None:raise ConnectorError('retailer_unavailable','Requested retailer navigation is not visible in the confirmed context.')
-                    target.click(timeout=bounded_ms(5000))
+                    # Address acknowledgment can precede retailer hydration. Wait
+                    # for the actual matching navigation rather than scanning an
+                    # early, mostly empty DOM or hundreds of product anchors.
+                    target=page.locator('a[href^="/store/'+retailer+'/s?"]')
+                    try:target.first.wait_for(state='visible',timeout=bounded_ms(15000))
+                    except DeadlineExceeded:raise
+                    except Exception:raise ConnectorError('retailer_unavailable','Requested retailer navigation did not become visible after address selection.')
+                    target.first.click(timeout=bounded_ms(5000))
                     page.wait_for_timeout(bounded_ms(500))
                 state,settled=wait_for_catalog(page,retailer)
                 emit('search_stage_complete',provider='instacart',stage=stage,duration_ms=round((time.monotonic()-phase_started)*1000))

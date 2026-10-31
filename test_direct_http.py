@@ -12,6 +12,17 @@ class DirectTests(unittest.TestCase):
     def test_ignores_script_and_unrelated_cards(self):
         self.assertEqual(parse_html(HTML,'chicken'),[])
         self.assertEqual(parse_html('<script>'+HTML.split('</script>',1)[1]+'</script>','milk'),[])
+    def test_hydrated_image_template_preserves_card_image(self):
+        payload=[{'__typename':'RetailersRetailer','id':'1','slug':'aldi'},
+                 {'__typename':'SearchRetailerResults','retailerId':'1','itemIds':['item1']},
+                 {'__typename':'ItemsItem','id':'item1','evergreenUrl':'123-whole-milk','name':'Whole Milk','size':'1 gal',
+                  'price':{'viewSection':{'itemCard':{'priceString':'$3.18'}}},
+                  'viewSection':{'itemImage':{'templateUrl':'https://www.instacart.com/image-server/{width=}x{height=}/milk.jpg'}}}]
+        script='<script type="application/json">'+json.dumps(payload)+'</script>'
+        rows=parse_html(HTML+script,'milk')
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['image_url'],'https://www.instacart.com/milk.jpg')
+        self.assertEqual(parse_html(script,'milk')[0]['image_url'],'https://www.instacart.com/image-server/197x197/milk.jpg')
     def test_http_errors_do_not_trigger_retries(self):
         opener=Mock(side_effect=HTTPError('https://www.instacart.com',403,'Forbidden',{},None))
         result=search_http('63129','milk',opener=opener)

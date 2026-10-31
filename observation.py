@@ -53,7 +53,8 @@ class Cards(HTMLParser):
             if not store or not url or not x.get('name') or not price:continue
             image=((x.get('viewSection') or {}).get('itemImage') or {}).get('templateUrl')
             if image:
-                for k in ('width','height'):image=image.replace('{'+k+'}','197')
+                for k in ('width','height'):
+                    image=image.replace('{'+k+'}','197').replace('{'+k+'=}','197')
                 if '{' in image:image=None
             output.append({'name':x['name'],'text':'Current price: '+price.replace('Current price:','').strip()+'\n'+str(x.get('size') or ''),'url':'/products/'+url+'?retailerSlug='+store,'image_url':image})
         return output
