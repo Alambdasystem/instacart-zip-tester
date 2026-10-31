@@ -60,7 +60,7 @@ class SearchCache:
                         if not self.independent:
                             for group in entry['groups']:self.groups[group]=entry['expires']
             if not entry:return None
-            return deepcopy(entry['payload']), {'hit':True,'source':source,'age_seconds':int(self.clock()-entry['created']),'expires_in':max(0,int(entry['expires']-self.clock())),'ttl_seconds':self.ttl,'snapshot_id':entry.get('snapshot_id'),'refresh_in':max(0,int(entry['expires']-self.clock()-120))}
+            return deepcopy(entry['payload']), {'hit':True,'source':source,'age_seconds':int(self.clock()-entry['created']),'expires_in':max(0,int(entry['expires']-self.clock())),'ttl_seconds':self.ttl,'snapshot_id':entry.get('snapshot_id'),'refresh_in':max(0,int(entry['expires']-self.clock()-(225 if self.independent else 120)))}
     def put(self,key,payload,expected_fence=None):
         with self.lock:
             self._prune();now=self.clock()
@@ -82,7 +82,7 @@ class SearchCache:
                     raise ConnectorError('cache_invalidated','Store invalidated during fetch; retry with fresh context.')
                 while self.entries and (len(self.entries)>=self.max_entries or sum(v.get('bytes',0) for v in self.entries.values())+entry['bytes']>8_000_000):self.entries.pop(next(iter(self.entries)))
                 self.entries[key]=entry
-                return {'hit':False,'source':'live','age_seconds':0,'expires_in':self.ttl,'ttl_seconds':self.ttl,'snapshot_id':entry['snapshot_id'],'refresh_in':max(0,self.ttl-120)}
+                return {'hit':False,'source':'live','age_seconds':0,'expires_in':self.ttl,'ttl_seconds':self.ttl,'snapshot_id':entry['snapshot_id'],'refresh_in':max(0,self.ttl-225)}
             if self.catalog:
                 with self.catalog.db() as db:
                     db.execute('BEGIN IMMEDIATE')
