@@ -58,8 +58,13 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(first['source'],'persistent_cache');self.assertEqual(second['source'],'memory_cache');self.assertEqual(second['expires_in'],200)
     def test_recovery_requires_success_and_never_probes_screening(self):
         fetch=Mock(return_value={'items':[self.item()],'location':{'verified':False}});worker=Ingestor(self.c,SearchCache(),threading.Lock(),fetch,queries=['milk']);worker.pause_reason='login_required'
+        worker.circuit={'zip':'63110','query':'eggs','retailer':'aldi'}
         self.assertEqual(worker.recover()['status'],'recovered');self.assertIsNone(worker.pause_reason)
+        fetch.assert_called_once_with('63110',['eggs'],'aldi',True)
         worker.pause_reason='provider_blocked';fetch.reset_mock()
         from connector import ConnectorError
+        with self.assertRaises(ConnectorError):worker.recover()
+        fetch.assert_not_called()
+        worker.pause_reason='login_required';worker.circuit={'evidence':'legacy_unavailable'}
         with self.assertRaises(ConnectorError):worker.recover()
         fetch.assert_not_called()

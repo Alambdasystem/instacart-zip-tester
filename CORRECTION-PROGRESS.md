@@ -38,4 +38,23 @@ Implemented context-specific persistent offers with additive schema version/back
 
 Direct local HTTP remains unsupported: no authorized address-context mechanism or complete matching catalog has been proven. It is discovery-only. No HTTP canary is enabled. Screening recovery remains blocked without authorized provider-session setup. Recovery helper runs in the service shell and never prints the local operator credential.
 
-Remaining architectural work from the broader plan: fully normalized offer/job tables, a single extracted search orchestration module, staged same-response browser capture, robust pagination, hard process cancellation on client disconnect, validated HTTP context transport, repeated parity matrix and canary. The monotonic deadlines bound individual stage waits but do not claim hard operating-system cancellation of DNS or all blocking I/O.
+Remaining architectural work from the broader plan: fully normalized offer/job tables, a single extracted search orchestration module, robust pagination, hard process cancellation on client disconnect, validated HTTP context transport, repeated parity matrix and canary. The monotonic deadlines bound individual stage waits but do not claim hard operating-system cancellation of DNS or all blocking I/O.
+
+
+### v0.5 live acceptance evidence
+
+Runtime ce61a565 (October 31, 2026): health/readiness 200; unauthenticated recovery 403. Public fixture address 5430 Telegraph Road, St. Louis, MO 63129 returned 229 products, 229 image URLs, 23 retailer listings in 43.064 s. Active address acknowledgment passed, but branch and delivery serviceability remain unverified. Immediate cache-only repeat returned the same 229 products in 2.496 s, memory_cache, zero fetched queries, TTL reduced to 297 s. Selection and quantity-two local cart passed, subtotal $7.38. Three sampled product images fetched HTTP 200 image/jpeg; UI initially loaded seven lazy images with none failed.
+
+Same-response audit: initial HTML had 14 complete items and 909 references (895 without details), initial DOM and address-selected DOM had zero cards, subsequent shelf collection 230 cards / 229 normalized items. Results were partial with pagination available. These measurements demonstrate hydration/lazy-loading, not complete inventory coverage.
+
+Fresh controlled pair: anonymous HTTP 14 products in 2.834 s, unknown ZIP; browser 236 products in 38.078 s with acknowledged 63129. Five overlapping identities, zero equal-price offers. Gate correctly BLOCKED / not_comparable; no canary or production transport switch. The HTTP embedded image template uses {width=} and {height=}; a follow-up normalizes these placeholders and adds a regression.
+
+ALDI-only bootstrap failed retailer_unavailable after 17.803 s because navigation was checked before hydration (address-selected DOM was empty). Follow-up waits up to 15 seconds for the exact visible retailer link rather than scanning the first 300 early anchors. Runtime acceptance pending its deployment.
+
+111 deterministic tests pass with the navigation/image follow-up. Operator recovery and post-deployment ALDI results are recorded in the accompanying migration plan. Full normalized offer/job schema, shared orchestration extraction, robust pagination, hard cancellation, and sustained soak remain open. These are not claimed complete.
+
+Operator recovery succeeded at 07:11:03 UTC: public-read probe returned 218 products, cleared the legacy login circuit and resumed background discovery. This did not import an authenticated session or verify local delivery. Final restart/worker acceptance pending.
+
+Final runtime follow-up 456bf064: ALDI navigation advanced past the missing-link race but encountered interactive login (502/login_required); no retry/bypass. Direct embedded image normalization returned 14/14 image URLs. Persistent-cache restart proof returned 236 items with no fetch, then L1 memory returned the same 236; expiry decreased 18→15 seconds. Worker resumed briefly, then a new milk job required access before location selection and paused again. The loop is NOT healthy or continuously filling: final snapshot 5,000 stored rows, zero fresh prices, 1,582 jobs, four ZIPs, 397 distinct queries.
+
+Recovery tightened after this finding: only the retained paused job's exact ZIP/query/retailer is probed; a legacy pause without scope returns recovery_context_required instead of clearing on an unrelated milk read. New circuits persist scope. Screening still prevents any probe. 111 tests pass including exact recovery fetch arguments and legacy fail-closed behavior. Continuous ingestion now requires authorized provider-session integration; do not repeatedly invoke recovery.

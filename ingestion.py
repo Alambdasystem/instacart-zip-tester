@@ -146,16 +146,20 @@ class Ingestor:
     def recover(self):
         with self.mutex:
             if self.pause_reason=='provider_blocked':raise ConnectorError('provider_blocked','Screening pause requires authorized provider-session recovery; anonymous retry is disabled.')
+            if not self.pause_reason:return {'status':'already_running','message':'No provider pause needs recovery.'}
+            scope=dict(self.circuit or {})
+            if not all(k in scope for k in ('zip','query','retailer')):
+                raise ConnectorError('recovery_context_required','The paused job context was not retained. Authorized provider-session setup is required; an unrelated public probe cannot clear this pause.')
         if not self.browser_lock.acquire(blocking=False):raise ConnectorError('busy','Browser is occupied; retry operator recovery later.')
         budget=deadline.begin(90)
         try:
-            set_location({'postal_code':self.zip,'country_code':'US'})
-            probe=self.fetch(self.zip,['milk'],self.retailer,True)
+            set_location({'postal_code':scope['zip'],'country_code':'US'})
+            probe=self.fetch(scope['zip'],[scope['query']],scope['retailer'],True)
             if not probe.get('items'):raise ConnectorError('no_results','Recovery probe returned no readable products.')
             with self.mutex:
                 self.pause_reason=None;self.circuit=None;self.last_error=None;self.persist()
             emit('ingestion_recovered',provider='instacart',status='probe_succeeded')
-            return {'status':'recovered','probe_products':len(probe['items']),'location_verified':probe.get('location',{}).get('verified',False),'message':'Public-read probe succeeded. Background discovery resumed; no authenticated provider session was imported.'}
+            return {'status':'recovered','probe_products':len(probe['items']),'location_verified':probe.get('location',{}).get('verified',False),'message':'Paused-job public-read probe succeeded. Background discovery resumed; no authenticated provider session was imported.'}
         finally:self.browser_lock.release();deadline.reset(budget)
     def tier(self,job):
         age=self.clock()-job.get('last_requested',0)
@@ -234,7 +238,7 @@ class Ingestor:
                 emit('ingestion_failed',provider='instacart',status=e.status)
                 if e.status in ('provider_blocked','login_required'):
                     self.pause_reason=e.status
-                    self.circuit={'reason':e.status,'paused_at':self.clock(),'scope':'instacart_public_browser','evidence':'visible_dialog_or_screening','stage':getattr(e,'stage',None)}
+                    self.circuit={'reason':e.status,'paused_at':self.clock(),'scope':'instacart_public_browser','evidence':'visible_dialog_or_screening','stage':getattr(e,'stage',None),'zip':job['zip'],'query':job['query'],'retailer':job['retailer']}
                     emit('ingestion_paused',provider='instacart',pause_reason=e.status)
             return False
         except Exception:

@@ -686,7 +686,7 @@
         },
         "responses": {
           "200": {
-            "description": "One public-read probe succeeded; worker resumed"
+            "description": "The paused-job public-read probe succeeded; worker resumed"
           },
           "403": {
             "description": "Operator credential required"
