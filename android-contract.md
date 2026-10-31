@@ -68,6 +68,6 @@ Comparisons are observational, not a unified provider checkout.
 
 ## Retailer discovery and geographic scope
 
-SearchResponse.retailers lists visible retailer sections (id, name, products_returned, branch_verified=false). diagnostics lists query, cards_seen, products_returned, retailers_with_products, settled, page_url and observed_zip. The public page is bounded to 8 products per retailer, 80 per query, collected round-robin after stabilization; it is not a complete catalog. Exact retailer requests filter returned links to that retailer id.
+SearchResponse.retailers lists visible retailer sections (id, name, products_returned, branch_verified=false). diagnostics lists query, cards_seen, products_returned, retailers_with_products, settled, page_url and observed_zip. The public page is bounded to 500 products per query, without a per-retailer cap, collected round-robin after stabilization; it is not a complete catalog. Exact retailer requests filter returned links to that retailer id.
 
 location.verified means only that the active address-control ZIP matches the requested ZIP after the search. verification_scope=zip_only, store_branch_verified=false and delivery_serviceability_verified=false. Do not infer a local store from a product brand, retailer slug, or requested ZIP partition. Unverified cached rows keep their source observed_zip and must remain labeled as provider-context observations.

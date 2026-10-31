@@ -10,10 +10,10 @@ The public search page can render several retailer shelves, but the previous con
 - In strict mode, attempt the normal visible ZIP suggestion flow. Explicit unverified collection reads the current provider context without opening the full-address form. A suggestion click alone never confirms location.
 - In strict mode, return location_required when the provider cannot confirm the requested ZIP. Never manufacture a street address or silently enable unverified mode.
 - In explicit unverified mode, preserve the actual observed provider ZIP, and identify requested ZIPs as catalog partitions rather than coverage.
-- Wait at least eight seconds for all-retailer searches (four for explicit retailer searches) and require four stable snapshots. Bound collection to 22 seconds and report unsettled/partial results.
+- Wait at least twelve seconds for all-retailer searches (four for explicit retailer searches) and require four stable snapshots. Bound collection to 22 seconds and report unsettled/partial results.
 - Recheck active ZIP after every query. Do not inherit verification from a prior query.
 - Discover retailer sections from their visible store links. Return retailer ids, names, bounded product counts and branch_verified=false.
-- Replace a first-twenty slice with round-robin collection, at most eight products per retailer and eighty per query.
+- Replace a first-twenty slice with round-robin collection, no per-retailer cap and up to 500 products per query.
 - Accept safe retailer slugs in search/cache invalidation and ingestion queue, so discovered retailers can be selected.
 - Filter explicit-retailer results to matching product-link retailer slugs.
 - Preserve retailer discovery and per-query diagnostics through live responses, cache hits and provider comparison.

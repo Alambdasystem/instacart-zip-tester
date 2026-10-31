@@ -32,11 +32,11 @@ def normalize(cards, query, retailer, observed_zip):
         result.append({'id': hashlib.sha256((source_store+'|'+name+'|'+str(size)+'|'+str(price_value)).encode()).hexdigest()[:24], 'name': name, 'size': size, 'price': price_value, 'currency': 'USD', 'retailer': source_store, 'query': query, 'observed_zip': observed_zip, 'source': 'instacart_public_browser', 'image_url':image_url, 'url': product_url or 'https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query), 'availability': 'Displayed; not independently verified'})
     return balanced_items(result)
 
-def balanced_items(items, per_retailer=8, maximum=80):
+def balanced_items(items, per_retailer=None, maximum=500):
     """Round-robin visible retailer groups; a large first shelf cannot starve others."""
     groups=defaultdict(deque)
     for item in items:
-        if len(groups[item['retailer']]) < per_retailer:
+        if per_retailer is None or len(groups[item['retailer']]) < per_retailer:
             groups[item['retailer']].append(item)
     output=[]
     while groups and len(output)<maximum:
@@ -47,16 +47,20 @@ def balanced_items(items, per_retailer=8, maximum=80):
     return output
 
 
-SNAPSHOT_JS = """() => {
+SNAPSHOT_JS = r"""() => {
  const root=document.querySelector('main, [role="main"]');
  const retailers=[...(root?.querySelectorAll('[role="group"][aria-label="retailer"] a[href]')||[])].map(a=>({name:a.innerText.trim(),url:a.getAttribute('href')}));
- const groups=[...(root?.querySelectorAll('[role="group"]')||[])];
- let cards=groups.filter(e=>e.querySelector('h3')&&e.innerText.includes('Current price:'));
- if(!cards.length) cards=[...(root?.querySelectorAll('[role="button"]')||[])].filter(e=>e.querySelector('h3')&&e.innerText.includes('Current price:'));
- return {retailers,cards:cards.map(e=>{
- const a=e.matches('a[data-item-card-button]')?e:e.querySelector('a[data-item-card-button]');
- return {name:e.querySelector('h3').innerText,text:e.innerText,image_url:e.querySelector('img')?.currentSrc||e.querySelector('img')?.getAttribute('src'),url:a?.getAttribute('href')};
- })};
+ const anchors=[...(root?.querySelectorAll('a[data-item-card-button][href]')||[])];
+ let cards=anchors.map(a=>{
+ const e=a.closest('[role="group"]')||a;
+ const heading=e.querySelector('h3, h2, [role="heading"]');
+ return {name:heading?.innerText||e.querySelector('img')?.alt||'',text:e.innerText+'\n'+(a.getAttribute('aria-label')||''),image_url:e.querySelector('img')?.currentSrc||e.querySelector('img')?.getAttribute('src'),url:a.getAttribute('href')};
+ });
+ if(!cards.length){
+ const groups=[...(root?.querySelectorAll('[role="group"], [role="button"]')||[])];
+ cards=groups.filter(e=>e.querySelector('h3')&&e.innerText.includes('Current price:')).map(e=>({name:e.querySelector('h3').innerText,text:e.innerText,image_url:e.querySelector('img')?.currentSrc||e.querySelector('img')?.getAttribute('src'),url:e.querySelector('a[data-item-card-button]')?.getAttribute('href')}));
+ }
+ return {retailers,cards,has_next_page:!!root?.querySelector('button[aria-label="Next page"]')};
 }"""
 
 
@@ -145,7 +149,7 @@ def wait_for_catalog(page, retailer='', timeout=22, clock=time.monotonic):
         stable=stable+1 if signature and signature==last else 0
         last=signature
         # Multi-retailer discovery gets a longer minimum window, including when only one store exists.
-        minimum=4 if retailer else 8
+        minimum=4 if retailer else 12
         if state['cards'] and clock()-start>=minimum and stable>=4:
             return state,True
         page.wait_for_timeout(750)
@@ -180,7 +184,7 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
         try:
             for query in queries:
                 url='https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query)
-                page.goto(url,wait_until='domcontentloaded',timeout=35000)
+                page.goto(url,wait_until='commit',timeout=35000)
                 stage='confirming address control'
                 observed,verified=establish_location(page,zip_code,allow_unverified)
                 stage='waiting for retailer shelves to stabilize'
@@ -194,7 +198,8 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                 if retailer:normalized=[item for item in normalized if item['retailer']==retailer]
                 items.extend(normalized);locations.append((observed,verified))
                 for r in discovered_retailers(state,normalized):retailers[r['id']]=r
-                diagnostics.append({'query':query,'cards_seen':len(state['cards']),'products_returned':len(normalized),'retailers_with_products':len({i['retailer'] for i in normalized}),'settled':settled,'page_url':page.url,'observed_zip':observed})
+                diagnostics.append({'query':query,'cards_seen':len(state['cards']),'products_returned':len(normalized),'retailers_with_products':len({i['retailer'] for i in normalized}),'settled':settled,'collection_limit':500,'pagination_available':bool(state.get('has_next_page')),'page_url':page.url,'observed_zip':observed})
+                if len(normalized)>=500 or state.get('has_next_page'):warnings.append('Results cover the current visible page; additional provider pages may exist. No retailer allowlist is applied.')
                 if not settled:warnings.append('Visible catalog did not fully stabilize before the time limit; coverage may be partial.')
                 if not verified:warnings.append('Requested ZIP '+zip_code+' is unverified; results belong to the provider context, not confirmed neighborhood inventory.')
             if not items:raise ConnectorError('no_results','No readable products matched the selected retailer. This is not proof of no stock.')

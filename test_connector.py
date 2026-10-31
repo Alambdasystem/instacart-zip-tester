@@ -27,9 +27,9 @@ class RenderPage:
 class ConnectorTests(unittest.TestCase):
     def test_all_retailers_survive_first_shelf_and_cap(self):
         data=normalize(cards('kroger',100)+cards('aldi',30)+cards('costco',10),'milk','',None)
-        self.assertEqual(len(data),24)
+        self.assertEqual(len(data),140)
         self.assertEqual([i['retailer'] for i in data[:3]],['kroger','aldi','costco'])
-        self.assertEqual({s:sum(i['retailer']==s for i in data) for s in ['kroger','aldi','costco']},{'kroger':8,'aldi':8,'costco':8})
+        self.assertEqual({s:sum(i['retailer']==s for i in data) for s in ['kroger','aldi','costco']},{'kroger':100,'aldi':30,'costco':10})
     def test_cross_retailer_identical_names_remain_distinct(self):
         raw=[{'name':'Milk','text':'Current price: $2.99','url':'/products/1?retailerSlug='+s} for s in ['aldi','kroger']]
         result=normalize(raw,'milk','',None)
