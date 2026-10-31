@@ -31,6 +31,12 @@ class CorrectionTests(unittest.TestCase):
         loc={'postal_code':'63129','country_code':'US','address':{'line1':'5430 Telegraph Road','city':'St. Louis','region':'MO'}}
         a=context_id(loc);b=context_id({**loc,'address':{**loc['address'],'line1':'1 Other Road'}})
         self.assertNotEqual(a,b);self.assertNotIn('Telegraph',a)
+    def test_recommendations_do_not_satisfy_query(self):
+        from connector import matches_query
+        self.assertFalse(matches_query('Whole Milk','cucumbers'))
+        self.assertTrue(matches_query('Organic Cucumber','cucumbers'))
+        self.assertFalse(matches_query('Chicken Thighs','chicken breast'))
+        self.assertEqual(normalize([{'name':'Milk Conditioner','text':'Current price: $2.99'}],'milk','aldi',None),[])
     def test_product_id_survives_price_change(self):
         raw={'name':'Milk','text':'Current price: $2.99','url':'/products/123?retailerSlug=aldi'}
         self.assertEqual(normalize([raw],'milk','aldi',None)[0]['id'],normalize([{**raw,'text':'Current price: $3.99'}],'milk','aldi',None)[0]['id'])
@@ -47,6 +53,14 @@ class CorrectionTests(unittest.TestCase):
         with patch.object(self.catalog,'save_state',wraps=self.catalog.save_state) as save:
             worker.observe('63110',['eggs']);self.assertEqual(save.call_count,1)
         worker.enqueue('milk',due=2000);self.assertEqual(worker.jobs[0]['next_due'],2000)
+    def test_quote_expiry_and_thread_safety(self):
+        from result_store import ResultStore
+        store=ResultStore(clock=lambda:self.now)
+        def write(n):store[str(n)]={'created':1000,'expires':1100,'payload':{}}
+        threads=[threading.Thread(target=write,args=(n,)) for n in range(30)]
+        for t in threads:t.start()
+        for t in threads:t.join()
+        self.assertEqual(len(store),30);self.now=1100;self.assertIsNone(store.get('1'));self.assertEqual(len(store),0)
     def test_pause_survives_restore(self):
         worker=Ingestor(self.catalog,self.cache(),threading.Lock(),Mock(),queries=['milk']);worker.pause_reason='login_required';worker.persist()
         other=Ingestor(self.catalog,self.cache(),threading.Lock(),Mock(),queries=['milk']);self.assertEqual(other.pause_reason,'login_required')

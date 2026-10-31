@@ -1,9 +1,10 @@
+from provider_registry import CAPABILITIES
 import contextvars
 from location_context import current_location, has_precise_location
 """Provider-isolated comparison, cache, bounded read budget, and sanitized activity."""
 import json, os, threading, time, uuid
 from concurrent.futures import ThreadPoolExecutor
-from connector import ConnectorError
+from connector import ConnectorError, matches_query
 from search_cache import SearchCache
 import satsuma_provider as satsuma
 import vercel_provider as vercel
@@ -72,7 +73,7 @@ class Comparison:
             rows=db.execute('SELECT at,provider,zip,outcome,http_status,item_count,cache_hit FROM provider_activity ORDER BY at DESC LIMIT 50').fetchall()
             used=db.execute('SELECT COUNT(*) FROM provider_calls').fetchone()[0]
             vused=db.execute('SELECT COUNT(*) FROM vercel_calls').fetchone()[0]
-        return {'vercel_proxy':{'configured':bool(os.getenv('VERCEL_MEALME_API_KEY')),'base_url':vercel.BASE_URL,
+        return {'capabilities':CAPABILITIES,'vercel_proxy':{'configured':bool(os.getenv('VERCEL_MEALME_API_KEY')),'base_url':vercel.BASE_URL,
                 'read_budget':max(0,min(100,int(os.getenv('VERCEL_MEALME_READ_BUDGET','0')))),
                 'attempts_in_database':vused,'background_ingestion':False,'live_contract_verified':False,'documented_routes_verified':True},'satsuma_configured':bool(os.getenv('SATSUMA_API_KEY')),'satsuma_base_url':satsuma.BASE_URL,
                 'satsuma_background_ingestion':False,'read_attempts_in_database':used,
@@ -88,7 +89,7 @@ class Comparison:
                 items=self.catalog.search(queries,z,store or None,provider=provider)
                 status='cached' if items else 'not_cached'
                 warnings=['Stored snapshots only; no upstream request. Compare freshness and location before use.']
-                cache_hits=[bool(items)]
+                cache_hits=[bool(items) and all(i.get('price_fresh') for i in items)]
                 observed={i.get('observed_zip') for i in items}
                 location={'requested_zip':z,'observed_zip':next(iter(observed)) if len(observed)==1 else None,'verified':bool(items) and all(i.get('location_verified') for i in items)}
             else:
@@ -132,11 +133,12 @@ class Comparison:
             error={'code':getattr(e,'code',getattr(e,'status','provider_error')),'message':e.message,'http_status':upstream}
         except Exception:
             status='partial' if items else 'error';error={'code':'provider_error','message':'Provider lookup failed; no sample results substituted.','http_status':None}
-        items=list({i['id']:i for i in items}.values())
+        items=list({i['id']:i for i in items if any(matches_query(i.get('name',''),q) for q in queries)}.values())
+        if not items and not error:status='not_cached' if mode in ('catalog','cache_only') else 'empty'
         # Comparison is observational; existing Instacart cart flow remains separate.
         for item in items:item['selectable']=False
         self.activity(provider,z,status,items,upstream, bool(cache_hits) and all(cache_hits))
-        return {'provider':provider,'status':status,'error':error,'items':items,'location':location,
+        return {'source':'catalog_discovery' if mode=='catalog' else 'cache_or_live','provider':provider,'status':status,'error':error,'items':items,'location':location,
                 'retailers':list(found_retailers.values()),'diagnostics':diagnostics,
                 'warnings':list(dict.fromkeys(warnings)),'cache_hit':bool(cache_hits) and all(cache_hits),
                 'duration_ms':round((time.monotonic()-start)*1000),

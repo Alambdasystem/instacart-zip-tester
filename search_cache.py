@@ -20,7 +20,7 @@ class SearchCache:
                 db.execute("DELETE FROM search_snapshots WHERE expires<=?",(self.clock(),))
                 db.execute('DELETE FROM search_snapshots WHERE namespace=? AND key NOT IN (SELECT key FROM search_snapshots WHERE namespace=? ORDER BY expires DESC LIMIT ?)',(self.namespace,self.namespace,self.max_entries))
     def key(self, zip_code, queries, retailer, allow_unverified):
-        return (zip_code, tuple(sorted(set(' '.join(q.casefold().split()) for q in queries))), retailer or '*', allow_unverified, context_id(current_location(zip_code)))
+        return (zip_code, tuple(sorted(set(' '.join(q.casefold().split()) for q in queries))), retailer or '*', allow_unverified, 'v04.1:'+context_id(current_location(zip_code)))
     def _prune(self):
         now=self.clock()
         expired_groups={g for g,expires in self.groups.items() if expires<=now}

@@ -14,7 +14,7 @@ Baseline: feac490. Implemented and tested in this release:
 - Updated mobile-compatible location inputs, selected-provider cache-first action, nullable price rendering and context-reset behavior; current deployment copy.
 - Additive snapshot table; native pre-v04 SQLite backup created once on disk; bounded persistent snapshots and memory-cache bytes.
 
-75 tests passed before final release verification. Unit tests use synthetic provider fixtures and do not prove delivery availability.
+77 tests passed before final release verification. Unit tests use synthetic provider fixtures and do not prove delivery availability.
 
 Provider docs checked directly: https://mealmeai.vercel.app/docs confirms GET /api/stores/search and GET /api/catalog/search. 404 can mean restaurant_not_found or product_not_found, not necessarily a missing route. No guessed endpoint changes made.
 
@@ -24,3 +24,6 @@ Remaining plan items must not be represented as complete:
 - Complete relevance taxonomy/restaurant-specific discovery routing, robust store pagination and measured provider quality ranking.
 - Verified local address/branch/delivery coverage depends on actual provider acknowledgment and authorized session if required. A public test address is not delivery proof.
 - Live provider smoke, durable restart proof and 30-minute memory soak must be recorded separately after deployment. No new provider spend or larger budgets are implied.
+
+
+Second correction pass: thread-safe expiring quote store, conservative query matching, cache key versioning to reject older recommendation snapshots, clearer catalog/stale labels, queue pagination, provider capability registry, readiness and request IDs, restart recovery for interrupted jobs and graceful server shutdown. Public-address smoke returned location_required for both 63129 and 63110; this is an explicit unresolved provider address acknowledgment, not verified local delivery. Live selection and quantity-two local cart arithmetic passed against an unverified-location snapshot. No OOM events were reported in the observed period after the 2 GB upgrade.

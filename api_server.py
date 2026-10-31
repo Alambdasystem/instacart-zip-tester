@@ -1,3 +1,4 @@
+from result_store import ResultStore
 from location_context import normalize_location, set_location, context_id, current_location
 from work_coordinator import PriorityLock
 from decimal import Decimal
@@ -12,7 +13,7 @@ from connector import ConnectorError, search_browser
 
 ROOT = Path(__file__).parent
 LOCK = PriorityLock()
-RESULTS = {}
+RESULTS = ResultStore()
 RATE = {}
 CACHE = SearchCache(ttl=300)
 INVALIDATIONS = {}
@@ -53,12 +54,15 @@ def merge_parts(parts, hit_queries, fetched_queries):
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
     def send(self,code,data):
-        raw=json.dumps(data).encode(); self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.end_headers(); self.wfile.write(raw)
+        raw=json.dumps(data).encode(); self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.send_header('X-Request-ID',uuid.uuid4().hex); self.end_headers(); self.wfile.write(raw)
     def do_GET(self):
         route=urlsplit(self.path)
         if route.path=='/api/v1/providers/status':return self.send(200,COMPARISON.status())
         if route.path=='/api/v1/ingestion/status':
-            return self.send(200,INGESTOR.status() if INGESTOR else {'enabled':False,'catalog':CATALOG.counts()})
+            params=parse_qs(route.query)
+            try:offset=max(0,int(params.get('offset',['0'])[0]));limit=min(100,max(1,int(params.get('limit',['50'])[0])))
+            except ValueError:return self.send(422,{'error':'invalid_request','message':'Invalid pagination'})
+            return self.send(200,INGESTOR.status(offset,limit) if INGESTOR else {'enabled':False,'catalog':CATALOG.counts()})
         if route.path in ('/api/v1/catalog','/api/v1/catalog/export'):
             params=parse_qs(route.query);q=[x[:120] for x in params.get('queries',params.get('query',['']))[:3]];z=params.get('zip',[None])[0];retailer=params.get('retailer',[None])[0];allow=params.get('allow_unverified_location',['false'])[0]=='true'
             discovery=None
@@ -76,6 +80,11 @@ class Handler(BaseHTTPRequestHandler):
             if fresh:
                 RESULTS[sid]={'created':time.time(),'expires':time.time()+min(i['price_expires_in'] for i in fresh),'payload':{**payload,'items':fresh}}
             return self.send(200,payload)
+        if self.path=='/ready':
+            try:
+                with CATALOG.db() as db:db.execute('SELECT 1').fetchone()
+                return self.send(200,{'status':'ready','storage_available':Path(CATALOG.path).exists(),'persistent_mount_configured':bool(os.getenv('RENDER_DISK_MOUNT_PATH'))})
+            except Exception:return self.send(503,{'status':'not_ready','message':'Catalog storage unavailable'})
         if self.path=='/health': return self.send(200,{'status':'ok','version':'0.4.0'})
         if self.path=='/openapi.json': return self.send(200,SPEC)
         if route.path in ('/docs','/swagger','/android-contract.md','/instasearch-contract.md'):
@@ -90,9 +99,7 @@ class Handler(BaseHTTPRequestHandler):
             data=json.loads(self.rfile.read(size))
             if not isinstance(data,dict): raise ValueError('Expected a JSON object.')
             now=time.time()
-            while len(RESULTS)>=200: RESULTS.pop(next(iter(RESULTS)))
-            for key in list(RESULTS):
-                if now>=RESULTS[key].get('expires',RESULTS[key]['created']+300): RESULTS.pop(key,None)
+            RESULTS.prune()
             if self.path=='/api/v1/compare':
                 z,qs,store,flag=validate(data)
                 mode=data.get('mode','catalog');providers=data.get('providers',['instacart','mealme_satsuma'])
@@ -103,6 +110,7 @@ class Handler(BaseHTTPRequestHandler):
                     RATE[client]=[t for t in RATE.get(client,[]) if now-t<60]
                     if len(RATE[client])>=3:return self.send(429,{'error':'rate_limited','message':'Three live comparisons per minute.'})
                     RATE[client].append(now)
+                if INGESTOR and mode not in ('catalog','cache_only') and 'instacart' in providers and not current_location(z).get('address') and not current_location(z).get('coordinates'):INGESTOR.observe(z,qs,store)
                 return self.send(200,COMPARISON.compare(z,qs,store,flag,mode,list(dict.fromkeys(providers))))
             if self.path=='/api/v1/cache/invalidate':
                 retailer=data.get('retailer');z=data.get('zip')
@@ -149,13 +157,13 @@ class Handler(BaseHTTPRequestHandler):
                 selected=[products[i] for i in dict.fromkeys(ids)]
                 return self.send(200,{'selection_id':str(uuid.uuid4()),'items':selected,'subtotal':round(sum(p['price'] for p in selected),2),'currency':'USD','cart_updated':False,'location':result['payload']['location'],'message':'Selection only. Provider cart is unchanged.'})
             if self.path!='/api/v1/search': return self.send(404,{'error':'not_found'})
+            if 'providers' in data:return self.send(422,{'error':'invalid_request','message':'Use /api/v1/compare to select providers.'})
             z,qs,store,flag=validate(data)
-            if INGESTOR and not current_location(z).get('address') and not current_location(z).get('coordinates'):INGESTOR.observe(z,qs,store)
+            if INGESTOR and data.get('mode')!='cache_only' and not current_location(z).get('address') and not current_location(z).get('coordinates'):INGESTOR.observe(z,qs,store)
             if os.getenv('CONNECTOR_ENABLED','false').lower()!='true': return self.send(503,{'error':'connector_disabled','message':'Browser connector is not enabled on this instance.','items':[]})
             if len(RATE)>1000: RATE.clear()
             client=hashlib.sha256(self.client_address[0].encode()).hexdigest()
             RATE[client]=[t for t in RATE.get(client,[]) if now-t<60]
-            if len(RATE[client])>=3: return self.send(429,{'error':'rate_limited','message':'Limit: three searches per minute.'})
             mode=data.get('mode','auto')
             parts=[];missing=[];hit_queries=[]
             for q in qs:
@@ -170,8 +178,11 @@ class Handler(BaseHTTPRequestHandler):
             if missing and mode=='cache_only':
                 if parts:
                     payload,meta=merge_parts(parts,hit_queries,[]);meta.update({'hit':False,'partial_hit':True})
-                    return self.send(200,{**payload,'status':'partial','missing_queries':missing,'cache':meta})
+                    sid=str(uuid.uuid4());payload.update({'search_id':sid,'status':'partial','missing_queries':missing,'cache':meta})
+                    RESULTS[sid]={'created':time.time(),'expires':time.time()+meta['expires_in'],'payload':payload}
+                    return self.send(200,payload)
                 return self.send(200,{'status':'cache_miss','items':[],'missing_queries':missing,'location':{'requested_zip':z,'verified':False},'cache':{'hit':False,'sources':[]}})
+            if len(RATE[client])>=3:return self.send(429,{'error':'rate_limited','message':'Limit: three live searches per minute.'})
             if not LOCK.acquire(timeout=90): return self.send(429,{'error':'busy','message':'One browser search is running. Retry shortly.'})
             RATE[client].append(now)
             try:
@@ -210,4 +221,11 @@ if __name__=='__main__':
     if os.getenv('INGEST_ENABLED','false').lower()=='true':
         INGESTOR=Ingestor(CATALOG,CACHE,LOCK,search_browser,zip_code=os.getenv('INGEST_ZIP','63129'),retailer=os.getenv('INGEST_RETAILER',''))
         INGESTOR.start()
-    ThreadingHTTPServer(('0.0.0.0',int(os.getenv('PORT','3000'))),Handler).serve_forever()
+    server=ThreadingHTTPServer(('0.0.0.0',int(os.getenv('PORT','3000'))),Handler)
+    import signal
+    def stop_service(*args):
+        if INGESTOR:INGESTOR.stop.set()
+        threading.Thread(target=server.shutdown,daemon=True).start()
+    signal.signal(signal.SIGTERM,stop_service)
+    try:server.serve_forever()
+    finally:server.server_close()

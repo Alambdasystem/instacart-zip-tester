@@ -9,13 +9,22 @@ class ConnectorError(Exception):
         self.status, self.message = status, message
         super().__init__(message)
 
+def matches_query(name,query):
+    """Conservative lexical match; recommendations aren't exact query coverage."""
+    def words(value):
+        tokens=re.findall(r'[a-z0-9]+',value.casefold())
+        irregular={'tomatoes':'tomato','potatoes':'potato','berries':'berry'}
+        return {irregular.get(t,t[:-1] if len(t)>3 and t.endswith('s') else t) for t in tokens if t not in {'and','the','with'}}
+    wanted=words(query)
+    return not wanted or wanted.issubset(words(name))
+
 def normalize(cards, query, retailer, observed_zip):
     result, seen = [], set()
     for card in cards:
         name = card.get('name', '').strip()
         text = card.get('text', '')
         price = re.search(r'Current price:\s*\$([\d,]+\.\d{2})', text)
-        if not name or not price:
+        if not name or not price or not matches_query(name,query) or re.search(r'\b(conditioner|shampoo|body wash|soap|lotion|lip balm|detergent|moisturizer)\b',name,re.I):
             continue
         source_path = card.get('url') or ''
         product_url = 'https://www.instacart.com'+source_path if source_path.startswith('/products/') else None
