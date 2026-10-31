@@ -281,7 +281,7 @@ class Ingestor:
             hot=self.planner.pick(mean,lambda j:self.context_key(j['zip'],j['retailer']) in self.blocked_contexts) if self.planner else None
             if not due and not hot:return False
             self.refresh_turn+=1
-            urgent=hot and hot.get('_expires',now)-now<mean+30
+            urgent=hot and hot.get('_expires',now)-now<2*mean+30
             job=hot if hot and (not due or self.refresh_turn%5!=0 or urgent) else self.choose_job(due)
         is_refresh='_refresh_key' in job
         flag=job.get('_allow',True)
@@ -295,10 +295,10 @@ class Ingestor:
             with self.mutex:self.last_error={'status':'cache_unavailable','message':'Background cache read failed; provider fetch deferred.'}
             emit('ingestion_cache_unavailable',provider='instacart')
             return False
-        if snapshot and snapshot[1]['expires_in']>(135 if is_refresh else 60):
+        if snapshot and snapshot[1]['expires_in']>(225 if is_refresh else 60):
             meta=snapshot[1]
             with self.mutex:
-                job.update(last_status='fresh_cache',next_due=now+meta['expires_in']-(135 if is_refresh else 60))
+                job.update(last_status='fresh_cache',next_due=now+meta['expires_in']-(225 if is_refresh else 60))
                 self.persist()
             return False
         if not self.browser_lock.acquire(blocking=False):return False

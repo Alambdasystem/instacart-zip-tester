@@ -42,9 +42,10 @@ class RefreshPlanner:
     def completed(self,j,meta):
         with self.lock:
             now=self.clock();expiry=now+meta['expires_in']
-            # Start around minute 3; deterministic jitter staggers popular keys.
+            # Allow two bounded 90s reads plus the 15s tick delay and margin.
+            # Deterministic jitter staggers keys without extending quote expiry.
             jitter=int(hashlib.sha256(repr(j['_refresh_key']).encode()).hexdigest()[:4],16)%16
-            j['_expires']=expiry;j['next_due']=max(now,expiry-120-jitter)
+            j['_expires']=expiry;j['next_due']=max(now,expiry-210-jitter)
     def promote(self,location,items):
         with self.lock:
             self._prune();now=self.clock()
@@ -58,7 +59,7 @@ class RefreshPlanner:
     @staticmethod
     def capacity(mean):
         # Reserve 40% for foreground/discovery; never admit a huge five-minute set.
-        return max(1,min(8,math.floor(165*.6/(max(1,mean or 60)+15))))
+        return max(1,min(8,math.floor((75+max(1,mean or 60))*.6/(max(1,mean or 60)+15))))
     def admitted(self,mean=60):
         now=self.clock();self._prune()
         return sorted((j for j in self.entries.values() if not j.get('_blocked')),key=lambda j:(j.get('_basket_until',0)>now,j['requests'],j['last_requested']),reverse=True)[:self.capacity(mean)]
@@ -74,4 +75,4 @@ class RefreshPlanner:
     def status(self,mean=60):
         with self.lock:
             admitted=self.admitted(mean);now=self.clock()
-            return {'enabled':True,'demand_entries':len(self.entries),'admitted':len(admitted),'capacity':self.capacity(mean),'waiting':max(0,len(self.entries)-len(admitted)),'due':sum(j['next_due']<=now for j in admitted),'demand_ttl_seconds':self.demand_ttl,'refresh_lead_seconds':[120,135],'hard_quote_ttl_seconds':300,'private_context_storage':'memory_only','scope':'Capacity target, not guaranteed freshness or delivery coverage.'}
+            return {'enabled':True,'demand_entries':len(self.entries),'admitted':len(admitted),'capacity':self.capacity(mean),'waiting':max(0,len(self.entries)-len(admitted)),'due':sum(j['next_due']<=now for j in admitted),'demand_ttl_seconds':self.demand_ttl,'refresh_lead_seconds':[210,225],'hard_quote_ttl_seconds':300,'private_context_storage':'memory_only','scope':'Capacity target, not guaranteed freshness or delivery coverage.'}

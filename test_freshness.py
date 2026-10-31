@@ -125,7 +125,7 @@ class FreshnessTests(unittest.TestCase):
     def test_discovery_turn_is_preserved_when_refresh_has_time(self):
         planner=self.planner();meta=self.put();planner.observe('63129','milk','aldi',True,meta)
         fetch=Mock(return_value=self.payload('eggs'));worker=Ingestor(self.catalog,self.cache,threading.Lock(),fetch,queries=['eggs'],clock=self.clock)
-        worker.refresh_turn=4;worker.durations=[54];self.now[0]=1175
+        worker.refresh_turn=4;worker.durations=[54];self.now[0]=1110
         self.assertTrue(worker.tick());self.assertEqual(fetch.call_args.args[1],['eggs'])
     def test_versioned_switch_defaults_off_and_environment_can_disable_it(self):
         import os
@@ -139,3 +139,9 @@ class FreshnessTests(unittest.TestCase):
         (self.root/'freshness-config.json').write_text('{"enabled":"false"}')
         with patch.dict(os.environ,{},clear=True):
             with self.assertRaises(ValueError):policy_enabled(self.root)
+    def test_refresh_window_covers_in_progress_read_and_next_read_budgets(self):
+        planner=self.planner();meta=self.put();planner.observe('63129','milk','aldi',True,meta)
+        due=planner.admitted()[0]['next_due']
+        # Existing read 90s + scheduler delay 15s + refresh read 90s must
+        # complete before the original quote expiry at 1300.
+        self.assertLess(due+90+15+90,1300)

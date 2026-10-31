@@ -12,13 +12,13 @@ The version-controlled `freshness-config.json` switch defaults to false for the 
 | --- | --- | --- |
 | search_cache.py · key/put/get/invalidate/fence | Independent five-minute snapshot expiry; original expiry survives L2 restart; durable invalidation fence; explicit store invalidation remains | Staggered milk/eggs writes, restart, expiry boundary, unaffected retailer/provider |
 | search_service.py · resolve/finish | Coalesce overlapping forced refreshes after lock; leader alone spends live-call budget; capture/check invalidation fence; register successful foreground demand | Concurrent threads share one fetch, invalidation during fetch rejects results, cache-only schedules nothing |
-| refresh_planner.py · observe/admitted/pick/completed/failed/promote | Bounded 64-entry RAM demand queue, fifteen-minute inactivity eviction, basket priority, capacity based on measured service time; stagger refresh 120–135 seconds before expiry | Private context preserved for provider fetch but absent from durable queue/status; hard quote remains unchanged |
+| refresh_planner.py · observe/admitted/pick/completed/failed/promote | Bounded 64-entry RAM demand queue, fifteen-minute inactivity eviction, basket priority, capacity based on measured service time; stagger refresh 210–225 seconds before expiry, allowing for two non-preemptible 90-second read budgets and the tick delay | Private context preserved for provider fetch but absent from durable queue/status; hard quote remains unchanged |
 | ingestion.py · Catalog.ingest/search and Ingestor.tick/status | Fence catalog writes; explicit historical price fields; admitted refresh jobs share existing browser/120-attempt hourly budget, foreground lock priority and provider suspensions | Budget/pause tests; urgent refresh precedence; discovery turn when time permits |
 | api_server.py · initialization/search/jobs/select/cart | Flag wiring, sanitized status, keep request context only in quote RAM; basket activity promotes exact context; precise-address baskets do not seed ZIP-only discovery | Existing endpoint/quote/expiry/context regression suite runs with flag off and on |
 | middleware.html | Catalog preview during live search, last-seen labels, disabled preview selection; fresh results replace preview; hot-refresh status; weighted-price caption | JavaScript syntax plus live browser verification |
 | openapi.json / android-contract.md | Additive historical-price/status models and browsing integration guidance; old search IDs still expire | Published examples and HTTP response schema validation |
 | Dockerfile | Include refresh_planner.py and freshness-config.json | Verify image starts and health reports code version and flag state |
-| test_freshness.py | Seventeen targeted concurrency, invalidation, expiry, private-context and scheduler tests | In addition to the existing regression suite |
+| test_freshness.py | Eighteen targeted concurrency, invalidation, expiry, private-context and scheduler tests | In addition to the existing regression suite |
 
 ## Controlled rollout
 
@@ -36,3 +36,8 @@ An admitted small set is a capacity target, not continuous freshness for all 1,5
 ## Evidence
 
 Implementation and local test results are recorded during this rollout. Production validation is recorded separately; passing fixtures do not establish real provider coverage.
+
+
+### First production timing correction
+
+The first enabled-policy trial returned 247 products / 24 retailer listings for acknowledged ZIP 63129 and validated the local basket. It demonstrated a late refresh after a non-preemptible discovery read; the old quote correctly returned 409 price_expired. The 120–135-second lead was insufficient for two 90-second browser budgets plus the tick delay. v0.7.1 increases the lead to 210–225 seconds, conservatively admits demand and preserves discovery turns only when a refresh has enough time. The original five-minute price deadline is unchanged. A second live timing trial is recorded separately; the first trial is not claimed to have passed early refresh.
