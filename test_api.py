@@ -20,6 +20,17 @@ class MiddlewareTests(unittest.TestCase):
     def setUp(self):
         api.RESULTS.clear();api.RATE.clear();api.CACHE.entries.clear();api.CACHE.groups.clear();api.INVALIDATIONS.clear()
         with api.CATALOG.db() as db:db.execute('DELETE FROM search_snapshots')
+    def test_http_comparison_does_not_mutate_normal_search(self):
+        direct={'status':'ok','items':[],'duration_ms':2,'location':{'verified':False}}
+        browser={'status':'ok','items':[],'duration_ms':3,'location':{'verified':True}}
+        with patch.object(api,'search_http',return_value=direct),patch.object(api.COMPARISON,'one',return_value=browser) as fetch:
+            status,data=self.post('/api/v1/diagnostics/http-compare',{'zip':'63129','query':'milk'})
+        self.assertEqual(status,200);self.assertFalse(data['normal_search_changed'])
+        fetch.assert_called_once_with('instacart','63129',['milk'],'',False,'auto')
+    def test_http_screening_does_not_fallback_to_browser(self):
+        with patch.object(api,'search_http',return_value={'status':'provider_blocked','items':[]}),patch.object(api.COMPARISON,'one') as fetch:
+            status,data=self.post('/api/v1/diagnostics/http-compare',{'zip':'63129','query':'milk'})
+        self.assertEqual(data['status'],'provider_blocked');fetch.assert_not_called()
     def test_response_request_id_matches_log(self):
         from telemetry import REQUEST_ID
         rows=[]

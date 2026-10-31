@@ -77,3 +77,8 @@ location.verified means only that the active address-control ZIP matches the req
 SearchRequest accepts legacy `zip` or `location.postal_code` with country US and optional address (line1, city, region) OR coordinates (latitude, longitude). Conflicting ZIPs and unknown fields return 422. Address/GPS values are not silently discarded: unsupported provider modes return location_unsupported. Address selection requires provider acknowledgment and does not prove delivery serviceability.
 
 Modes: auto checks fresh memory then exact persistent snapshots and fetches misses; cache_only never fetches; refresh bypasses caches. Legacy live remains cache-first and catalog remains discovery-only. A cached result does not prove local stock. Search cache metadata includes sources; per-provider items include cache_source. Prices expire within five minutes; persistent reads do not extend expiry. Selection tokens remain process-local and expire on restart. Foreground searches wait up to 90 seconds for the single browser slot, ahead of the next background job.
+
+
+### Diagnostic transport comparison
+
+`POST /api/v1/diagnostics/http-compare` accepts the search request with exactly one query. It returns `direct_http`, `browser`, and `summary` (counts, image/price coverage, retailer IDs, elapsed time, and matching product/retailer IDs). The browser branch uses `auto` cache-first behavior. Direct HTML does not establish delivery location, does not create selection tokens, and never supplies cart quotes. Normal search behavior is unchanged. An explicit screening response stops the comparison.

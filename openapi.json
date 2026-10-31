@@ -617,6 +617,40 @@
           }
         }
       }
+    },
+    "/api/v1/diagnostics/http-compare": {
+      "post": {
+        "summary": "Compare direct public HTML and browser retrieval without changing normal search",
+        "description": "One query. Browser uses auto cache-first mode. Direct HTML establishes no address/ZIP context; its items are diagnostic and not selectable. A screening response stops the comparison.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              },
+              "example": {
+                "zip": "63129",
+                "queries": [
+                  "milk"
+                ],
+                "allow_unverified_location": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Independent direct HTTP/browser results, summary and overlap; not interchangeable local offers"
+          },
+          "422": {
+            "description": "Invalid request"
+          },
+          "429": {
+            "description": "Rate limited"
+          }
+        }
+      }
     }
   },
   "components": {

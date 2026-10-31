@@ -1,3 +1,4 @@
+from direct_http import search_http, compare_results
 from telemetry import REQUEST_ID, emit
 from result_store import ResultStore
 from location_context import normalize_location, set_location, context_id, current_location
@@ -105,6 +106,20 @@ class Handler(BaseHTTPRequestHandler):
             if not 0<size<=10000: raise ValueError('Request body must be 1–10000 bytes.')
             data=json.loads(self.rfile.read(size))
             if not isinstance(data,dict): raise ValueError('Expected a JSON object.')
+            if self.path=='/api/v1/diagnostics/http-compare':
+                z,qs,store,flag=validate(data)
+                if len(qs)!=1:return self.send(422,{'error':'invalid_request','message':'Comparison accepts exactly one query.'})
+                client=self.client_address[0];now=time.time()
+                RATE[client]=[t for t in RATE.get(client,[]) if now-t<60]
+                if len(RATE[client])>=3:return self.send(429,{'error':'rate_limited','message':'Three diagnostic/live searches per minute.'})
+                RATE[client].append(now)
+                direct=search_http(z,qs[0],store)
+                # Stop on explicit screening; do not use browser fallback to evade it.
+                if direct['status']=='provider_blocked':
+                    return self.send(200,{'status':'provider_blocked','direct_http':direct,'browser':None,'normal_search_changed':False})
+                browser=COMPARISON.one('instacart',z,qs,store,flag,'auto')
+                return self.send(200,{'status':'compared','summary':compare_results(direct,browser),'direct_http':direct,'browser':browser,'normal_search_changed':False})
+
             now=time.time()
             RESULTS.prune()
             if self.path=='/api/v1/compare':
