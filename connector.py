@@ -106,6 +106,7 @@ def establish_location(page, requested_zip, allow_unverified):
     address=requested.get('address')
     if requested.get('coordinates'):raise ConnectorError('location_unsupported','Instacart browser requires an address; GPS-only selection is not supported by this connector.')
     address_selected=False
+    save_clicked=False;save_enabled=False;active_matches=False;suggestion_matches=False
     opened_picker=False
     address_stage='opening_picker';address_failure=None
     if (observed!=requested_zip or address) and control.count() and not page.get_by_role('dialog').count():
@@ -132,18 +133,28 @@ def establish_location(page, requested_zip, allow_unverified):
                     address_stage='save_address_enabled'
                     save_deadline=time.monotonic()+12
                     while not save.first.is_enabled() and time.monotonic()<save_deadline:page.wait_for_timeout(400)
-                    if save.first.is_enabled():
+                    save_enabled=save.first.is_enabled()
+                    if save_enabled:
+                        save_clicked=True
                         address_stage='save_address_acknowledgment'
                         save.first.click(timeout=4000)
                         dialog=page.get_by_role('dialog')
                         if dialog.count():dialog.first.wait_for(state='hidden',timeout=12000)
-                # Selection requires provider acknowledgment, never simply a successful click.
-                address_selected=not page.get_by_role('dialog').count()
-                address_stage='active_address_control'
-                active=(control.first.get_attribute('aria-label',timeout=1200) or control.first.inner_text(timeout=1200) or '').casefold()
+                # Saving may unmount/remount the modal before updating the header.
+                # Poll both acknowledgment signals, rather than sampling the old ZIP.
+                address_stage='active_address_control' if save_clicked else 'save_address_enabled'
                 tokens=street_tokens(address['line1'])
-                address_selected=address_selected and street_tokens(active)[:len(tokens)]==tokens and bool(re.search(r'\b'+requested_zip+r'\b',suggestion_text))
-                if address_selected:page._instasearch_address_confirmation={'zip':requested_zip,'tokens':tokens}
+                suggestion_matches=bool(re.search(r'\b'+requested_zip+r'\b',suggestion_text))
+                ack_deadline=time.monotonic()+20
+                while time.monotonic()<ack_deadline:
+                    active=(control.first.get_attribute('aria-label',timeout=1200) or control.first.inner_text(timeout=1200) or '')
+                    active_matches=street_tokens(active)[:len(tokens)]==tokens
+                    address_selected=save_clicked and active_matches and suggestion_matches and not page.get_by_role('dialog').count()
+                    if address_selected:
+                        page._instasearch_address_confirmation={'zip':requested_zip,'tokens':tokens}
+                        break
+                    if not save_clicked:break
+                    page.wait_for_timeout(400)
             # A selected suggestion is not proof it was accepted. Read the address control again.
             deadline=time.monotonic()+5
             while time.monotonic()<deadline:
@@ -153,7 +164,7 @@ def establish_location(page, requested_zip, allow_unverified):
         except Exception as e:address_failure=type(e).__name__
     observed=observed_location(page)
     verified=observed==requested_zip and (not address or address_selected)
-    if address and not address_selected:raise ConnectorError('location_required','Provider did not acknowledge the submitted address at '+address_stage+('. '+address_failure if address_failure else '')+'. Complete the address or authorized session setup.')
+    if address and not address_selected:raise ConnectorError('location_required','Provider did not acknowledge the submitted address at '+address_stage+('. '+address_failure if address_failure else '')+'. save_clicked='+str(save_clicked)+', active_street_match='+str(active_matches)+', suggestion_zip_match='+str(suggestion_matches)+'. Complete the address or authorized session setup.')
     if not verified and not allow_unverified:
         raise ConnectorError('location_required','Instacart did not confirm the requested ZIP in its active address control. A delivery address or authorized session may be required.')
     if not verified:

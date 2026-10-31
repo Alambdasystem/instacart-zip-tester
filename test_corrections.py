@@ -18,6 +18,11 @@ class CorrectionTests(unittest.TestCase):
         a.put(key,p);self.now+=299;b=self.cache();payload,meta=b.get(key)
         self.assertEqual(meta['source'],'persistent_cache');self.assertEqual(meta['expires_in'],1)
         self.now+=1;self.assertIsNone(b.get(key))
+    def test_store_epoch_survives_cache_restart(self):
+        a=self.cache();a.put(a.key('63129',['milk'],'aldi',True),{'items':[{'retailer':'aldi'}]})
+        self.now+=240;b=self.cache()
+        meta=b.put(b.key('63129',['eggs'],'aldi',True),{'items':[{'retailer':'aldi'}]})
+        self.assertEqual(meta['expires_in'],60)
     def test_invalidation_cannot_resurrect_durable_snapshot(self):
         a=self.cache();key=a.key('63129',['milk'],'',True);a.put(key,{'items':[{'retailer':'aldi'}]})
         a.invalidate('aldi','63129');self.assertIsNone(self.cache().get(key))

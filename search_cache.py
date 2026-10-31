@@ -11,7 +11,9 @@ class SearchCache:
         self.catalog=None;self.namespace="instacart"
     def attach(self,catalog,namespace):
         self.catalog,self.namespace=catalog,namespace
-        with catalog.db() as db:db.execute("CREATE TABLE IF NOT EXISTS search_snapshots (namespace TEXT, key TEXT, expires REAL, payload TEXT, PRIMARY KEY(namespace,key))")
+        with catalog.db() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS search_snapshots (namespace TEXT, key TEXT, expires REAL, payload TEXT, PRIMARY KEY(namespace,key))")
+            db.execute("CREATE TABLE IF NOT EXISTS cache_epochs (namespace TEXT, group_key TEXT, expires REAL, PRIMARY KEY(namespace,group_key))")
         return self
     def _persist(self,key,entry):
         if self.catalog:
@@ -41,7 +43,17 @@ class SearchCache:
     def put(self,key,payload):
         with self.lock:
             self._prune();now=self.clock()
-            groups={(key[0],p.get('retailer') or key[2]) for p in payload['items']} or {(key[0],key[2])}
+            groups={(key[0],p.get('retailer') or key[2],key[4]) for p in payload['items']} or {(key[0],key[2],key[4])}
+            if self.catalog:
+                with self.catalog.db() as db:
+                    db.execute('BEGIN IMMEDIATE')
+                    db.execute('DELETE FROM cache_epochs WHERE expires<=?',(now,))
+                    for group in groups:
+                        encoded=json.dumps(group)
+                        row=db.execute('SELECT expires FROM cache_epochs WHERE namespace=? AND group_key=?',(self.namespace,encoded)).fetchone()
+                        expiry=row[0] if row else now+self.ttl
+                        db.execute('INSERT OR IGNORE INTO cache_epochs VALUES (?,?,?)',(self.namespace,encoded,expiry))
+                        self.groups[group]=expiry
             for group in groups:self.groups.setdefault(group,now+self.ttl)
             expires=min(now+self.ttl,*(self.groups[g] for g in groups))
             if key not in self.entries and len(self.entries)>=self.max_entries:self.entries.pop(next(iter(self.entries)))
@@ -55,14 +67,17 @@ class SearchCache:
         with self.lock:
             self._prune();removed=0
             for key,entry in list(self.entries.items()):
-                if any((store==retailer or retailer=='*') and (zip_code is None or z==zip_code) for z,store in entry['groups']):
+                if any((store==retailer or retailer=='*') and (zip_code is None or z==zip_code) for z,store,*_ in entry['groups']):
                     self.entries.pop(key,None);removed+=1
             if self.catalog:
                 with self.catalog.db() as db:
                     for raw,encoded in db.execute('SELECT key,payload FROM search_snapshots WHERE namespace=?',(self.namespace,)).fetchall():
                         value=json.loads(encoded)
-                        if any((retailer=='*' or store==retailer) and (zip_code is None or z==zip_code) for z,store in value['groups']):
+                        if any((retailer=='*' or store==retailer) and (zip_code is None or z==zip_code) for z,store,*_ in value['groups']):
                             db.execute('DELETE FROM search_snapshots WHERE namespace=? AND key=?',(self.namespace,raw))
+                    for raw, in db.execute('SELECT group_key FROM cache_epochs WHERE namespace=?',(self.namespace,)).fetchall():
+                        z,store,*_=json.loads(raw)
+                        if (retailer=='*' or store==retailer) and (zip_code is None or z==zip_code):db.execute('DELETE FROM cache_epochs WHERE namespace=? AND group_key=?',(self.namespace,raw))
             for group in list(self.groups):
                 if (group[1]==retailer or retailer=='*') and (zip_code is None or group[0]==zip_code):self.groups.pop(group,None)
             return removed

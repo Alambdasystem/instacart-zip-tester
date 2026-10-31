@@ -79,6 +79,31 @@ class ConnectorTests(unittest.TestCase):
         page.get_by_role.side_effect=lambda role,**kw:control if role=='button' else Empty()
         self.assertEqual(establish_location(page,'63129',True),('67570',False))
         control.first.click.assert_called_once()
+    def test_delayed_save_form_waits_and_acknowledges_selected_address(self):
+        from location_context import set_location
+        state={'label':'current address: 30043. Or select a new address.','dialog':True,'form':False}
+        page=Mock();control=Mock();field=Mock();option=Mock();save=Mock();dialog=Mock()
+        control.count.return_value=1;control.first.get_attribute.side_effect=lambda *a,**kw:state['label']
+        option.first.inner_text.return_value='5430 Telegraph Road St. Louis, MO 63129, USA'
+        save.first.wait_for.side_effect=lambda **kw:state.update(form=True)
+        save.count.side_effect=lambda:int(state['form']);save.first.is_enabled.side_effect=[False,True,True]
+        save.first.click.side_effect=lambda **kw:state.update(dialog=False,label='current address: 5430 Telegraph Road. Or select a new address.')
+        dialog.count.side_effect=lambda:int(state['dialog'])
+        def locator(role,**kw):
+            if role=='dialog':return dialog
+            if role=='textbox':return field
+            pattern=kw['name'].pattern
+            if pattern.startswith('^current address'):return control
+            if pattern.startswith('^Save'):return save
+            return option
+        page.get_by_role.side_effect=locator;page.locator.return_value.inner_text.return_value=''
+        # Picker can only open when no dialog currently exists.
+        state['dialog']=False;control.first.click.side_effect=lambda **kw:state.update(dialog=True)
+        set_location({'postal_code':'63129','country_code':'US','address':{'line1':'5430 Telegraph Road','city':'St. Louis','region':'MO'}})
+        try:self.assertEqual(establish_location(page,'63129',False),('63129',True))
+        finally:set_location(None)
+        save.first.wait_for.assert_called_once();save.first.click.assert_called_once()
+
     def test_confirmed_street_without_zip_retains_selected_suggestion_zip(self):
         page=Mock();control=Mock();control.count.return_value=1
         control.first.get_attribute.return_value='current address: 5430 Telegraph Road. Or select a new address.'
