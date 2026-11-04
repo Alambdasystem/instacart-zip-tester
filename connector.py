@@ -44,10 +44,19 @@ def normalize(cards, query, retailer, observed_zip):
         parsed_image=urlparse(image_url or '')
         if parsed_image.scheme!='https' or not (parsed_image.hostname and (parsed_image.hostname.endswith('.instacart.com') or parsed_image.hostname.endswith('.cloudfront.net') or parsed_image.hostname=='instacart.com')):image_url=None
         price_value = float(price.group(1).replace(',', ''))
-        unit=re.search(r'\$(\d+(?:\.\d{2})?)\s*(?:/|per\s+)(lb|oz|fl oz|kg|g|ct)\b',text,re.I)
-        basis='per_lb' if re.search(r'\bper lb\b|/lb\b',name+' '+text,re.I) else 'unspecified'
+        unit=re.search(r'\$(\d+(?:\.\d{2})?)\s*(?:/|per\s+)(fl oz|lb|oz|kg|g|ct)\b',text,re.I)
+        # A secondary $/oz comparison label does not describe the main charge.
+        suffix=text[price.end():]
+        primary=re.match(r'\s*(?:(?:/|per\s+)(fl oz|lb|oz|kg|g|ct)\b|(each|ea)\b)',suffix,re.I)
+        primary_unit=primary.group(1).lower() if primary and primary.group(1) else None
+        basis=('per_'+primary_unit.replace(' ','_')) if primary_unit else 'per_item' if primary else 'per_lb' if re.search(r'\bper lb\b|/lb\b',name,re.I) else 'unspecified'
+        price_label=(price.group(0)+(primary.group(0) if primary else '')).strip()
+        evidence={'price_basis_verified':basis!='unspecified','price_label':price_label[:160],
+                  'price_unit':primary_unit or ('item' if basis=='per_item' else 'lb' if basis=='per_lb' else None),
+                  'price_unit_evidence':'primary_price_label' if primary else 'product_name' if basis!='unspecified' else 'not_exposed'}
         promotion=next((line.strip()[:180] for line in lines if re.search(r'\bsale\b|buy .* get|\bwas \$',line,re.I)),None)
         result.append({'id': hashlib.sha256((source_store+'|'+(source_path.split('?')[0] or name+'|'+str(size))).encode()).hexdigest()[:24], 'name': name, 'size': size, 'price': price_value, 'currency': 'USD', 'retailer': source_store, 'query': query, 'price_basis':basis,'unit_price':{'amount':float(unit.group(1)),'unit':unit.group(2)} if unit else None,'promotion_text':promotion,'variants_status':'not_exposed','size_status':'displayed' if size else 'not_extracted', 'observed_zip': observed_zip, 'source': 'instacart_public_browser', 'image_url':image_url, 'url': product_url or 'https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query), 'availability': 'Displayed; not independently verified'})
+        result[-1].update(evidence)
     return balanced_items(result)
 
 def balanced_items(items, per_retailer=None, maximum=500):
@@ -63,6 +72,14 @@ def balanced_items(items, per_retailer=None, maximum=500):
             if not groups[retailer]: del groups[retailer]
             if len(output)==maximum:break
     return output
+
+def unambiguous_offers(items):
+    observed={};conflicts=set()
+    for item in items:
+        previous=observed.get(item['id'])
+        if previous and (previous.get('price'),previous.get('size'),previous.get('price_basis'))!=(item.get('price'),item.get('size'),item.get('price_basis')):conflicts.add(item['id'])
+        observed[item['id']]=item
+    return [item for key,item in observed.items() if key not in conflicts],len(conflicts)
 
 
 SNAPSHOT_JS = r"""() => {
@@ -318,8 +335,19 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                     page.wait_for_timeout(bounded_ms(500))
                 state,settled=wait_for_catalog(page,retailer)
                 emit('search_stage_complete',provider='instacart',stage=stage,duration_ms=round((time.monotonic()-phase_started)*1000))
+                # Commit the first bounded page before optional traversal. A carousel
+                # deadline must not discard already collected matching-context offers.
+                observed=observed_location(page);verified=verified and observed==zip_code
+                if not verified and not allow_unverified:
+                    raise ConnectorError('location_required','Active provider ZIP changed after search.')
+                baseline,_=unambiguous_offers(normalize(state['cards'],query,retailer,observed))
+                if retailer:baseline=[i for i in baseline if i['retailer']==retailer]
+                baseline_start=len(items)
+                items.extend(baseline);locations.append((observed,verified))
+                for r in discovered_retailers(state,baseline):retailers[r['id']]=r
                 from pagination import expand
                 page_limit=max(0,min(12,int(os.getenv('INSTACART_PAGE_ACTION_LIMIT','4'))))
+                stage='optional visible pagination'
                 state,paging=expand(page,state,SNAPSHOT_JS,lambda pg,timeout:wait_for_catalog(pg,retailer,timeout),observed_location,zip_code,allow_unverified,query,page_limit)
                 # Recheck after hydration/search; never carry verification from a previous query.
                 observed=observed_location(page);verified=verified and observed==zip_code
@@ -340,7 +368,7 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
                 if conflicts:warnings.append(str(len(conflicts))+' conflicting offer observations omitted; refresh before selection.')
                 # Explicit retailer requests must not silently return another retailer.
                 if retailer:normalized=[item for item in normalized if item['retailer']==retailer]
-                items.extend(normalized);locations.append((observed,verified))
+                items[baseline_start:]=normalized;locations[-1]=(observed,verified)
                 for r in discovered_retailers(state,normalized):retailers[r['id']]=r
                 diagnostics.append({'query':query,'conflicting_offers_omitted':len(conflicts),'pagination':paging,'stage_counts':{'initial_html':html_audit,'initial_dom_cards':initial_cards,'address_selected_dom_cards':address_cards,'collected_cards':len(state['cards'])},'cards_seen':len(state['cards']),'products_returned':len(normalized),'retailers_with_products':len({i['retailer'] for i in normalized}),'settled':settled,'collection_limit':500,'pagination_available':bool(state.get('has_next_page')),'pagination_scope':'visible_navigation_and_shelf_carousels','page_url':page.url,'observed_zip':observed})
                 if len(normalized)>=500 or state.get('has_next_page'):warnings.append('Results cover the current visible page; additional provider pages may exist. No retailer allowlist is applied.')

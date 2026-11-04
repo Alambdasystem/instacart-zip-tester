@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from connector import ConnectorError
 from isolated_runner import search_browser, stop_all
+from savings import calculate as calculate_savings, SavingsError
 
 ROOT = Path(__file__).parent
 LOCK = PriorityLock()
@@ -91,12 +92,17 @@ class Handler(BaseHTTPRequestHandler):
             provider=params.get('provider',['instacart'])[0]
             if provider not in ('instacart','mealme_satsuma','vercel_kroger','vercel_square','all'):return self.send(422,{'error':'invalid_provider'})
             items=CATALOG.search(q,z,retailer,provider=None if provider=='all' else provider,limit=5000 if route.path.endswith('/export') else 100)
-            for i in items:i['selectable']=i.get('provider','instacart')=='instacart' and isinstance(i.get('price'),(int,float)) and i['price_fresh'] and i.get('context_compatible',False) and (i.get('location_verified',False) or allow)
+            withheld=sum(not i.get('location_verified') or i.get('observed_zip')!=z for i in items) if z and not allow else 0
+            if z and not allow:items=[i for i in items if i.get('location_verified') and i.get('observed_zip')==z]
+            for i in items:i['selectable']=i.get('provider','instacart')=='instacart' and isinstance(i.get('price'),(int,float)) and i['price_fresh'] and i.get('context_compatible',False) and i.get('location_verified',False)
             fresh=[i for i in items if i['selectable']]
             observed={i.get('observed_zip') for i in items}
             location={'requested_zip':z,'observed_zip':next(iter(observed)) if len(observed)==1 else None,'verified':bool(fresh) and all(i.get('location_verified') for i in fresh),'verification_scope':'zip_only','delivery_serviceability_verified':False,'store_branch_verified':False}
             sid=str(uuid.uuid4())
             payload={'search_id':sid,'status':'catalog','discovery':discovery,'items':items,'location':location,'catalog':CATALOG.counts(),'cache':{'hit':bool(fresh),'source':'catalog_discovery','age_seconds':max([i['age_seconds'] for i in items],default=0),'expires_in':min([i['price_expires_in'] for i in fresh],default=0)},'warnings':['Stored catalog; inspect price_fresh. Requested ZIP is not a verified store location.']}
+            payload['excluded_unverified_observations']=withheld
+            if withheld:
+                payload['warnings'].append(str(withheld)+' observations withheld because the provider did not acknowledge the requested ZIP. Run a fresh search with location.address; ZIP alone may leave the provider default unchanged.')
             if fresh:
                 RESULTS[sid]={'created':time.time(),'expires':time.time()+min(i['price_expires_in'] for i in fresh),'payload':{**payload,'items':fresh}}
             return self.send(200,payload)
@@ -105,7 +111,7 @@ class Handler(BaseHTTPRequestHandler):
                 with CATALOG.db() as db:db.execute('SELECT 1').fetchone()
                 return self.send(200,{'status':'ready','storage_available':Path(CATALOG.path).exists(),'persistent_mount_configured':bool(os.getenv('RENDER_DISK_MOUNT_PATH'))})
             except Exception:return self.send(503,{'status':'not_ready','message':'Catalog storage unavailable'})
-        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.7.1','freshness_v07':FRESHNESS_V07})
+        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.8.0','freshness_v07':FRESHNESS_V07})
         if self.path=='/openapi.json': return self.send(200,SPEC)
         if route.path in ('/docs','/swagger','/android-contract.md','/instasearch-contract.md'):
             filename='android-contract.md' if route.path in ('/android-contract.md','/instasearch-contract.md') else 'swagger.html'
@@ -170,6 +176,9 @@ class Handler(BaseHTTPRequestHandler):
 
             now=time.time()
             RESULTS.prune()
+            if self.path=='/api/v1/savings':
+                try:return self.send(200,calculate_savings(RESULTS,data))
+                except SavingsError as e:return self.send(409,{'error':e.code,'message':str(e)})
             if self.path=='/api/v1/compare':
                 z,qs,store,flag=validate(data)
                 mode=data.get('mode','catalog');providers=data.get('providers',['instacart','mealme_satsuma'])

@@ -2,13 +2,19 @@
 import threading,time
 import cancellation
 class PriorityLock:
-    def __init__(self):self.condition=threading.Condition();self.held=False;self.waiters=0
+    def __init__(self):self.condition=threading.Condition();self.held=False;self.waiters=0;self.background_cancel=None
+    def register_background(self,event):
+        """Only the ingestion owner opts in to yielding; foreground reads never do."""
+        with self.condition:
+            self.background_cancel=event
+            if self.waiters:event.set()
     def acquire(self,blocking=True,timeout=-1):
         with self.condition:
             if not blocking:
                 if self.held or self.waiters:return False
                 self.held=True;return True
             self.waiters+=1
+            if self.background_cancel is not None:self.background_cancel.set()
             try:
                 deadline=time.monotonic()+(90 if timeout<0 else timeout)
                 while self.held:
@@ -19,6 +25,6 @@ class PriorityLock:
                 self.held=True;return True
             finally:self.waiters-=1
     def release(self):
-        with self.condition:self.held=False;self.condition.notify_all()
+        with self.condition:self.held=False;self.background_cancel=None;self.condition.notify_all()
     def locked(self):
         with self.condition:return self.held

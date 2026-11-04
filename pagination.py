@@ -1,9 +1,10 @@
 """Bounded traversal of visible provider navigation and retailer carousels."""
-import hashlib
+import hashlib,time
 import deadline
 
 def expand(page,state,snapshot,wait_catalog,observed_location,z,allow,query,maximum=4,limit=500):
     if maximum<=0:return state,{'actions':[],'stop_reason':'disabled','action_limit':0,'item_limit':limit}
+    traversal_end=time.monotonic()+8
     cards={(c.get('url'),c.get('name')):c for c in state['cards']};retailers={r['url']:r for r in state['retailers']}
     # Observed provider DOM: each retailer section contains the shelf cards and
     # its carousel controls; the aria-labelled retailer group is only a header.
@@ -15,7 +16,7 @@ def expand(page,state,snapshot,wait_catalog,observed_location,z,allow,query,maxi
     for kind,scope in scopes:
         if len(actions)>=maximum:reason='action_limit';break
         if len(cards)>=limit:reason='item_limit';break
-        if deadline.remaining()<8:reason='time_budget';break
+        if deadline.remaining()<15 or time.monotonic()>=traversal_end:reason='time_budget';break
         next_button=scope.get_by_role('button',name='Next page',exact=True)
         if next_button.count()!=1:continue
         button=next_button.first
@@ -23,7 +24,7 @@ def expand(page,state,snapshot,wait_catalog,observed_location,z,allow,query,maxi
         deadline.check();before=len(cards)
         try:
             button.click(timeout=deadline.bounded_ms(3000))
-            current,_=wait_catalog(page,timeout=min(4,max(.1,deadline.remaining()-3)))
+            current,_=wait_catalog(page,timeout=min(4,max(.1,traversal_end-time.monotonic()),max(.1,deadline.remaining()-10)))
         except (deadline.DeadlineExceeded,):raise
         except Exception as error:
             from connector import ConnectorError

@@ -108,12 +108,14 @@ class Catalog:
         with self.db() as db:
             for raw,seen,expires,terms,provider_name in OfferStore.rows(db,zip_code,retailer,provider,context):
                 p=json.loads(raw);p['provider']=provider_name
-                p['context_compatible']=bool(p.get('context_id') and p['context_id']==(request_context_id(current_location(zip_code or p.get('requested_zip'))) if provider_name=='instacart' else context_id(current_location(zip_code or p.get('requested_zip')))))
+                p['context_compatible']=bool(p.get('location_verified') and p.get('observed_zip')==p.get('requested_zip') and p.get('context_id') and p['context_id']==(request_context_id(current_location(zip_code or p.get('requested_zip'))) if provider_name=='instacart' else context_id(current_location(zip_code or p.get('requested_zip')))))
                 queries=query if isinstance(query,list) else [query]
                 import re
                 if query and not any(matches_query(p['name'],q) for q in queries):continue
                 if query and re.search(r'\b(conditioner|shampoo|body wash|soap|lotion|lip balm|detergent|moisturizer)\b',p['name'],re.I):continue
                 p.update({'age_seconds':max(0,int(now-seen)),'price_fresh':now<expires,'price_expires_in':max(0,int(expires-now)),'last_seen_price':p.get('price'),'price_status':'fresh' if now<expires else 'expired','last_seen':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(seen))})
+                p['local_offer_eligible']=bool(p['price_fresh'] and p['context_compatible'] and p.get('price_basis_verified'))
+                p['discovery_only']=not p['local_offer_eligible']
                 output.append(p)
                 if len(output)>=limit:break
         return output
@@ -138,8 +140,9 @@ class Catalog:
             rows=[json.loads(r[0]) for r in OfferStore.rows(db)]
             descriptions=db.execute('SELECT COUNT(*) FROM offer_products').fetchone()[0]
             delivery_fresh=db.execute('SELECT COUNT(*) FROM offers o JOIN offer_contexts c ON c.id=o.context_key WHERE o.expires>? AND c.branch_verified=1 AND c.delivery_verified=1',(now,)).fetchone()[0]
+            local_fresh=db.execute('SELECT COUNT(*) FROM offers o JOIN offer_contexts c ON c.id=o.context_key WHERE o.expires>? AND c.verified=1 AND c.observed_zip=c.requested_zip',(now,)).fetchone()[0]
         stores={(p.get('provider'),p.get('provider_location_id')) for p in rows if p.get('branch_verified') and p.get('provider_location_id')}
-        return {'schema_version':6,'retained_descriptions':descriptions,'fresh_delivery_verified_offers':delivery_fresh,'products':total,'fresh_prices':fresh,'stale_prices':total-fresh,'max_products':5000,
+        return {'schema_version':6,'retained_descriptions':descriptions,'fresh_delivery_verified_offers':delivery_fresh,'fresh_zip_acknowledged_offers':local_fresh,'fresh_unverified_observations':fresh-local_fresh,'products':total,'fresh_prices':fresh,'stale_prices':total-fresh,'max_products':5000,
                 'distinct_products':len({(p.get('provider'),p.get('retailer'),(p.get('url') or p.get('id','')).split('?')[0]) for p in rows}),
                 'with_images':sum(bool(p.get('image_url') or p.get('image')) for p in rows),
                 'verified_store_locations':len(stores),
@@ -302,8 +305,12 @@ class Ingestor:
                 self.persist()
             return False
         if not self.browser_lock.acquire(blocking=False):return False
+        yielded=threading.Event()
+        if hasattr(self.browser_lock,'register_background'):self.browser_lock.register_background(yielded)
+        class StopOrYield:
+            def is_set(inner):return self.stop.is_set() or yielded.is_set()
         budget=deadline.begin(90)
-        cancel_token=cancellation.bind(self.stop)
+        cancel_token=cancellation.bind(StopOrYield())
         started=time.monotonic()
         try:
             with self.mutex:self.active=job['zip']+' / '+job['query'];self.attempts.append(now);job['last_status']='fetching';job['last_attempt']=now;self.persist()
@@ -316,8 +323,13 @@ class Ingestor:
                 job.update({'next_due':stamp+interval,'successes':job['successes']+1,'failures':0,'last_status':'ready','last_success':stamp});self.last_error=None;self.durations.append(time.monotonic()-started);self.durations=self.durations[-50:]
                 if is_refresh:self.planner.completed(job,entries[0][1])
             return True
-        except ConnectorError as e:
+        except (ConnectorError,cancellation.CancelledError) as e:
             with self.mutex:
+                if getattr(e,'status','cancelled')=='cancelled' and yielded.is_set() and not self.stop.is_set():
+                    job.update(last_status='yielded_to_foreground',next_due=self.clock()+15)
+                    emit('ingestion_yielded',provider='instacart')
+                    return False
+                if isinstance(e,cancellation.CancelledError):return False
                 job['failures']+=1;job['last_status']=e.status
                 job['next_due']=self.clock()+min(1800,60*(2**min(job['failures']-1,5)))
                 if is_refresh:self.planner.failed(job,e.status)

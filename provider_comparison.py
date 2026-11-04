@@ -92,6 +92,7 @@ class Comparison:
         try:
             if mode=='catalog':
                 items=self.catalog.search(queries,z,store or None,provider=provider)
+                if not allow:items=[i for i in items if i.get('location_verified') and i.get('observed_zip')==z]
                 status='cached' if items else 'not_cached'
                 warnings=['Stored snapshots only; no upstream request. Compare freshness and location before use.']
                 cache_hits=[bool(items) and all(i.get('price_fresh') for i in items)]

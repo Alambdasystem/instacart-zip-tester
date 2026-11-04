@@ -126,3 +126,23 @@ For a fast browsing screen, first call GET /api/v1/catalog with ZIP/query/provid
 Recent successful auto/refresh searches and current basket selections can enter a bounded demand refresh set. Capacity is computed from measured fetch time and reserves foreground/discovery work. `cache_only` performs no upstream fetch and does not schedule one. No refresh timing or availability is guaranteed across provider failures, login restrictions or overloaded capacity.
 
 Background refresh does not extend or replace an already issued `search_id`. After expiry, call search again and use the new compatible item/search IDs for selection/cart. Existing HTTP 409 `price_expired` remains authoritative. Precise refresh contexts are held only in bounded memory for 15 minutes of inactivity and are lost on restart.
+
+## v0.8.0 local observations and savings acceptance
+
+`GET /api/v1/catalog?zip=63129` excludes unacknowledged or mismatched-ZIP observations by default. `allow_unverified_location=true` explicitly requests historical/discovery observations; those cannot issue local catalog quotes. `context_compatible` now requires observed ZIP acknowledgment, not merely the same requested cache key. Existing rows are retained for reference.
+
+Every newly parsed Instacart product includes `price_basis_verified`, `price_unit`, `price_label`, and `price_unit_evidence`. `per_item` requires an explicit primary `each`/`ea` label. A secondary $/oz label does not establish the main charge basis. Missing basis stays `unspecified`; never assume “each” from a package size. Weighted observations cannot be compared using integer item counts.
+
+Fresh search items also expose `price_fresh`, `price_expires_in`, `age_seconds`, `requested_zip`, `observed_zip`, `location_verified`, `context_id`, `local_offer_eligible`, and `discovery_only`. Old stored observations do not gain unit evidence on upgrade. ZIP acknowledgment does not verify a merchant branch or delivery serviceability.
+
+`POST /api/v1/savings` accepts only server-issued references:
+
+```json
+{"offers":[{"search_id":"fresh-search","item_id":"merchant-a-item"},{"search_id":"fresh-search","item_id":"merchant-b-item"}],"quantity":2}
+```
+
+It recomputes merchandise subtotals and savings from server-held prices. It requires two distinct merchants, identical provider product ID/name/size, the same acknowledged opaque location context, explicit matching item charge units, USD, no unvalidated promotions, and unexpired searches. `409` errors include `price_expired`, `location_unverified`, `mixed_location_context`, `product_mismatch`, `price_unit_unverified`, `price_unit_mismatch`, `weighted_quantity_required`, and `conditional_price`. Client-supplied prices are rejected. Revalidate after input changes and at displayed expiry. Taxes, fees, checkout price and delivery coverage remain outside this calculation.
+
+### Android acceptance still required
+
+On the installed Android build, use the actual delivery address in 63129, run a cancellable fresh search, and retain request IDs. Find the same packaged product at two merchants with explicit primary charge-unit evidence. Call `/api/v1/savings`, compare the displayed quantity/subtotals/savings against the returned decimals, change quantity, and verify recalculation. Wait until the earliest quote expires and verify the savings claim is removed until refresh succeeds. Repeat with a mismatched-ZIP observation, unknown price unit and different package size: none may create a savings claim. Record build number, merchant/product IDs, observed ZIP, price labels, expiry, API result and screenshots. API fixture tests alone do not satisfy this device acceptance.
