@@ -26,7 +26,7 @@
 
 ## Outstanding acceptance
 
-A real provider search must acknowledge 63129 and expose two identical packaged products at different merchants with explicit each/ea price labels before a positive savings demonstration is valid. The Android build must then consume the response, display/recalculate it and remove the claim on expiry. There is no adb, emulator or connected Android device in this execution environment. API fixture success does not close Android acceptance.
+A real provider search must acknowledge 63129 and expose two identical packaged products at different merchants with explicit each/ea or product-scoped Add 1 ct quantity labels before a positive savings demonstration is valid. The Android build must then consume the response, display/recalculate it and remove the claim on expiry. There is no adb, emulator or connected Android device in this execution environment. API fixture success does not close Android acceptance.
 
 ## v0.8.0 live retest and v0.8.1 refinement
 
@@ -35,3 +35,13 @@ A real provider search must acknowledge 63129 and expose two identical packaged 
 - Fresh 63129 address job reached provider selection and failed location_required at address_input. It did not prove location resolution or a fresh matching pair.
 - Public page inspection showed both Enter your address and Street address names on input id streetAddress, and exact product-scoped Add 1 ct controls. v0.8.1 accepts both observed field labels, waits for hydration, reclassifies an auth wall appearing after a click, and captures quantity-control labels without clicking them. Unknown units remain unknown. Conditional promotional labels are excluded from savings.
 - Browser inspection is separate from the service browser and is not proof of a successful API or Android comparison.
+
+## Final v0.8.1 live result
+
+Commit 5416d39bddc01a1c8067888f9f0fa5315e9561cb; deployment dep-dblem6gn74is739u6jb0 live at 2026-11-04T08:22:30.273483Z. All 172 tests passed (36.918 seconds). All published files matched tested source hashes.
+
+During an active background job, Render logged ingestion_yielded at 08:23:06.584614127 UTC. The foreground fresh address job succeeded in 49.083 seconds. Requested and observed ZIP both 63129, active address control acknowledged. 208 fresh products across 24 retailer listings; all 208 carried explicit quantity-control unit evidence. Branch and delivery were not independently verified.
+
+At 08:24:04 UTC, the same provider product 35023 (Coca-Cola Original Taste Soda Fridge Pack, 12 x 12 fl oz) was observed at Schnucks for $9.79 and Walgreens for $11.99. Both labels read Add 1 ct Coca-Cola Original Taste Soda Fridge Pack. POST /api/v1/savings returned 200: two packs cost $23.98 versus $19.58, merchandise savings $4.40 (18.35%), with 287 seconds remaining at comparison. Independent Decimal checks matched. Quantity one returned $2.20 savings; quantity three returned $6.60. A different product/package returned 409 product_mismatch. These are timestamped observations, not a promise the prices remain current.
+
+See LIVE-OFFER-VALIDATION.json for sanitized evidence. The proof is API-side. Native Android display/recalculation/expiry acceptance remains open: no connected Android device, emulator or native app workspace was available. No APK was modified. Use the Android acceptance sequence in android-contract.md against two freshly obtained offers; do not reuse the expired search IDs from this run.

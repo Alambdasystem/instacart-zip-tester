@@ -1,0 +1,73 @@
+{
+  "version": "0.8.1",
+  "commit": "5416d39bddc01a1c8067888f9f0fa5315e9561cb",
+  "deploy": "dep-dblem6gn74is739u6jb0",
+  "live_at_utc": "2026-11-04T08:22:30.273483Z",
+  "tests_passed": 172,
+  "search_job_seconds": 49.083,
+  "products": 208,
+  "retailers_with_products": 24,
+  "explicit_unit_items": 208,
+  "android_verified": false,
+  "android_blocker": "No adb, emulator, connected Android device, or native app workspace available in this execution environment.",
+  "ingestion_yielded_at_utc": "2026-11-04T08:23:06.584614127Z",
+  "scope": "Observed matching merchandise offers, with ZIP acknowledgment only; no merchant branch, delivery, taxes, fees or checkout verification.",
+  "observed_at_utc": "2026-11-04T08:24:04Z",
+  "location": {
+    "requested_zip": "63129",
+    "observed_zip": "63129",
+    "verified": true,
+    "verification_scope": "zip_only",
+    "store_branch_verified": false,
+    "delivery_serviceability_verified": false
+  },
+  "offers": [
+    {
+      "name": "Coca-Cola Original Taste Soda Fridge Pack",
+      "size": "12 x 12 fl oz",
+      "retailer": "schnucks",
+      "price": 9.79,
+      "currency": "USD",
+      "url": "https://www.instacart.com/products/35023-coca-cola-coke-fridge-pack-12-fl-oz?retailerSlug=schnucks",
+      "price_basis": "per_item",
+      "price_basis_verified": true,
+      "price_label": "Current price: $9.79",
+      "quantity_label": "Add 1 ct Coca-Cola Original Taste Soda Fridge Pack",
+      "price_unit": "item",
+      "price_unit_evidence": "quantity_control_label"
+    },
+    {
+      "name": "Coca-Cola Original Taste Soda Fridge Pack",
+      "size": "12 x 12 fl oz",
+      "retailer": "walgreens",
+      "price": 11.99,
+      "currency": "USD",
+      "url": "https://www.instacart.com/products/35023-coca-cola-coke-fridge-pack-12-fl-oz?retailerSlug=walgreens",
+      "price_basis": "per_item",
+      "price_basis_verified": true,
+      "price_label": "Current price: $11.99",
+      "quantity_label": "Add 1 ct Coca-Cola Original Taste Soda Fridge Pack",
+      "price_unit": "item",
+      "price_unit_evidence": "quantity_control_label"
+    }
+  ],
+  "quantity_2": {
+    "original_subtotal": 23.98,
+    "replacement_subtotal": 19.58,
+    "savings": 4.4,
+    "savings_percent": 18.35,
+    "expires_in": 287
+  },
+  "quantity_1": {
+    "http": 200,
+    "savings": 2.2
+  },
+  "quantity_3": {
+    "http": 200,
+    "savings": 6.6
+  },
+  "wrong_product": {
+    "http": 409,
+    "error": "product_mismatch"
+  }
+}
