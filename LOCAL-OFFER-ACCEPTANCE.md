@@ -1,4 +1,4 @@
-# Alambda local offer correctness — v0.8.0
+# Alambda local offer correctness — v0.8.1
 
 ## Reproduced before change, November 4, 2026
 
@@ -18,8 +18,8 @@
 
 ## Validation and rollout
 
-- 15 targeted regression tests cover location/reference gates, explicit units, Decimal savings, expiry, product/size/context/merchant/promotion conflicts, background yielding and preservation of the first page after pagination timeout.
-- Full regression suite: 170 tests. Final result is recorded with the live release evidence after execution; never treat a mocked fixture as a live offer pair.
+- 17 targeted regression tests cover location/reference gates, explicit units, Decimal savings, expiry, product/size/context/merchant/promotion conflicts, background yielding and preservation of the first page after pagination timeout.
+- Full regression suite: 170 tests passed for v0.8.0; v0.8.1 adds two targeted cases (172 total). Final result is recorded with the live release evidence after execution; never treat a mocked fixture as a live offer pair.
 - Baseline run initially lacked development-only jsonschema dependencies and encountered an intermittent descendant-reaping assertion; these were recorded before editing that path. Subsequent full run with development validators passed. No production dependency added.
 - Existing endpoints and five-minute quote TTL retained. Additive storage/metadata only. No source-provider budget, key, session state or resource-plan change.
 - Rollback: redeploy previous commit 03f3693. Database rows are not deleted. Note this restores the older reference-return behavior, so consumers must continue treating unverified observations as references.
@@ -27,3 +27,11 @@
 ## Outstanding acceptance
 
 A real provider search must acknowledge 63129 and expose two identical packaged products at different merchants with explicit each/ea price labels before a positive savings demonstration is valid. The Android build must then consume the response, display/recalculate it and remove the claim on expiry. There is no adb, emulator or connected Android device in this execution environment. API fixture success does not close Android acceptance.
+
+## v0.8.0 live retest and v0.8.1 refinement
+
+- v0.8.0 commit 30fa816b2df58be53d448408189d4f03d507d543; Render deploy dep-dbleik59el5s73cqokog live November 4 at 08:14:41 UTC. Health 200/version 0.8.0.
+- Strict catalog 63129/milk returned zero wrong-location rows, with 100 excluded observations. Explicit unverified discovery returned 100 reference observations from 30043. Request IDs: 9e4495e8ba464053bb376dfff82324bd and baaedb3acf034cb2a220c5f0477c63f7.
+- Fresh 63129 address job reached provider selection and failed location_required at address_input. It did not prove location resolution or a fresh matching pair.
+- Public page inspection showed both Enter your address and Street address names on input id streetAddress, and exact product-scoped Add 1 ct controls. v0.8.1 accepts both observed field labels, waits for hydration, reclassifies an auth wall appearing after a click, and captures quantity-control labels without clicking them. Unknown units remain unknown. Conditional promotional labels are excluded from savings.
+- Browser inspection is separate from the service browser and is not proof of a successful API or Android comparison.

@@ -24,6 +24,35 @@ class OfferCorrectnessTests(unittest.TestCase):
         i=self.item();self.assertEqual(i['price_basis'],'per_item');self.assertEqual(i['price_unit'],'item');self.assertTrue(i['price_basis_verified']);self.assertEqual(i['unit_price'],{'amount':.05,'unit':'fl oz'})
     def test_unknown_basis_is_not_guessed_from_pack_size_or_secondary_rate(self):
         i=self.item(suffix='');self.assertEqual(i['price_basis'],'unspecified');self.assertFalse(i['price_basis_verified'])
+    def test_product_scoped_add_one_count_is_unit_evidence(self):
+        card={'name':'Coca Cola Original','text':'Current price: $3.69\n2 L','quantity_label':'Add 1 ct Coca Cola Original'}
+        i=normalize([card],'Coca Cola','aldi','63129')[0]
+        self.assertEqual(i['price_basis'],'per_item');self.assertEqual(i['price_unit_evidence'],'quantity_control_label')
+        card['quantity_label']='Add 1 ct Different product'
+        self.assertFalse(normalize([card],'Coca Cola','aldi','63129')[0]['price_basis_verified'])
+    def test_renamed_street_address_field_is_supported(self):
+        from connector import establish_location
+        class EmptyField:
+            def count(self):return 0
+            @property
+            def first(self):return self
+            def wait_for(self,**kw):raise TimeoutError()
+        page=Mock();control=Mock();field=Mock();option=Mock();save=Mock();dialog=Mock();state={'modal':False,'label':'current address: 30043. Or select a new address.'}
+        control.count.return_value=1;control.first.get_attribute.side_effect=lambda *a,**kw:state['label'];control.first.click.side_effect=lambda **kw:state.update(modal=True)
+        field.count.return_value=1;dialog.count.side_effect=lambda:int(state['modal'])
+        option.first.inner_text.return_value='5430 Telegraph Road St. Louis, MO 63129, USA'
+        save.count.return_value=1;save.first.is_enabled.return_value=True
+        save.first.click.side_effect=lambda **kw:state.update(modal=False,label='current address: 5430 Telegraph Road. Or select a new address.')
+        def locator(role,**kw):
+            if role=='dialog':return dialog
+            if role=='textbox':
+                n=kw.get('name');return field if hasattr(n,'search') and n.search('Street address') else EmptyField()
+            if kw['name'].pattern.startswith('^current address'):return control
+            if kw['name'].pattern.startswith('^Save'):return save
+            return option
+        page.get_by_role.side_effect=locator;page.locator.return_value.inner_text.return_value=''
+        set_location({'postal_code':'63129','country_code':'US','address':{'line1':'5430 Telegraph Road','city':'St. Louis','region':'MO'}})
+        self.assertEqual(establish_location(page,'63129',False),('63129',True));field.fill.assert_called_once()
     def test_weighted_primary_differs_from_secondary_rate(self):
         i=self.item(suffix='/lb');self.assertEqual(i['price_basis'],'per_lb');self.assertEqual(i['price_unit'],'lb')
     def test_verified_decimal_savings(self):

@@ -50,11 +50,16 @@ def normalize(cards, query, retailer, observed_zip):
         primary=re.match(r'\s*(?:(?:/|per\s+)(fl oz|lb|oz|kg|g|ct)\b|(each|ea)\b)',suffix,re.I)
         primary_unit=primary.group(1).lower() if primary and primary.group(1) else None
         basis=('per_'+primary_unit.replace(' ','_')) if primary_unit else 'per_item' if primary else 'per_lb' if re.search(r'\bper lb\b|/lb\b',name,re.I) else 'unspecified'
+        quantity_label=' '.join(str(card.get('quantity_label') or '').split())
+        # Read-only evidence from this product's own control, never click Add.
+        quantity_each=quantity_label.casefold()==('Add 1 ct '+' '.join(name.split())).casefold()
+        if basis=='unspecified' and quantity_each:basis='per_item'
         price_label=(price.group(0)+(primary.group(0) if primary else '')).strip()
         evidence={'price_basis_verified':basis!='unspecified','price_label':price_label[:160],
+                  'quantity_label':quantity_label[:250] or None,
                   'price_unit':primary_unit or ('item' if basis=='per_item' else 'lb' if basis=='per_lb' else None),
-                  'price_unit_evidence':'primary_price_label' if primary else 'product_name' if basis!='unspecified' else 'not_exposed'}
-        promotion=next((line.strip()[:180] for line in lines if re.search(r'\bsale\b|buy .* get|\bwas \$',line,re.I)),None)
+                  'price_unit_evidence':'primary_price_label' if primary else 'quantity_control_label' if quantity_each and basis=='per_item' else 'product_name' if basis!='unspecified' else 'not_exposed'}
+        promotion=next((line.strip()[:180] for line in lines if re.search(r'\bsale\b|buy .* get|\bwas \$|spend .*save|\bcoupon\b|\bmember price\b|with .*card',line,re.I)),None)
         result.append({'id': hashlib.sha256((source_store+'|'+(source_path.split('?')[0] or name+'|'+str(size))).encode()).hexdigest()[:24], 'name': name, 'size': size, 'price': price_value, 'currency': 'USD', 'retailer': source_store, 'query': query, 'price_basis':basis,'unit_price':{'amount':float(unit.group(1)),'unit':unit.group(2)} if unit else None,'promotion_text':promotion,'variants_status':'not_exposed','size_status':'displayed' if size else 'not_extracted', 'observed_zip': observed_zip, 'source': 'instacart_public_browser', 'image_url':image_url, 'url': product_url or 'https://www.instacart.com/store/'+(retailer+'/' if retailer else '')+'s?k='+quote(query), 'availability': 'Displayed; not independently verified'})
         result[-1].update(evidence)
     return balanced_items(result)
@@ -89,11 +94,11 @@ SNAPSHOT_JS = r"""() => {
  let cards=anchors.map(a=>{
  const e=a.closest('[role="group"]')||a;
  const heading=e.querySelector('h3, h2, [role="heading"]');
- return {name:heading?.innerText||e.querySelector('img')?.alt||'',text:e.innerText+'\n'+(a.getAttribute('aria-label')||''),image_url:e.querySelector('img')?.currentSrc||e.querySelector('img')?.getAttribute('src'),url:a.getAttribute('href')};
+ return {name:heading?.innerText||e.querySelector('img')?.alt||'',text:e.innerText+'\n'+(a.getAttribute('aria-label')||''),quantity_label:e.querySelector('button[aria-label^="Add 1 ct "]')?.getAttribute('aria-label'),image_url:e.querySelector('img')?.currentSrc||e.querySelector('img')?.getAttribute('src'),url:a.getAttribute('href')};
  });
  if(!cards.length){
  const groups=[...(root?.querySelectorAll('[role="group"], [role="button"]')||[])];
- cards=groups.filter(e=>e.querySelector('h3')&&e.innerText.includes('Current price:')).map(e=>({name:e.querySelector('h3').innerText,text:e.innerText,image_url:e.querySelector('img')?.currentSrc||e.querySelector('img')?.getAttribute('src'),url:e.querySelector('a[data-item-card-button]')?.getAttribute('href')}));
+ cards=groups.filter(e=>e.querySelector('h3')&&e.innerText.includes('Current price:')).map(e=>({name:e.querySelector('h3').innerText,text:e.innerText,quantity_label:e.querySelector('button[aria-label^="Add 1 ct "]')?.getAttribute('aria-label'),image_url:e.querySelector('img')?.currentSrc||e.querySelector('img')?.getAttribute('src'),url:e.querySelector('a[data-item-card-button]')?.getAttribute('href')}));
  }
  return {retailers,cards,has_next_page:[...(root?.querySelectorAll('button[aria-label="Next page"]')||[])].some(b=>!b.disabled&&b.getAttribute('aria-disabled')!=='true'&&b.getClientRects().length)};
 }"""
@@ -134,7 +139,7 @@ def establish_location(page, requested_zip, allow_unverified):
     save_clicked=False;save_enabled=False;active_matches=False;suggestion_matches=False
     opened_picker=False
     address_stage='opening_picker';address_failure=None
-    field=page.get_by_role('textbox',name='Enter your address',exact=True)
+    field=page.get_by_role('textbox',name=re.compile(r'^(?:Enter your address|Street address)$',re.I))
     dialogs=page.get_by_role('dialog')
     existing_picker=False
     if dialogs.count():
@@ -149,7 +154,8 @@ def establish_location(page, requested_zip, allow_unverified):
             if not existing_picker:control.first.click(timeout=bounded_ms(3000))
             opened_picker=True
             address_stage='address_input'
-            field.wait_for(state='visible',timeout=bounded_ms(8000))
+            field.wait_for(state='visible',timeout=bounded_ms(15000))
+            address_stage='address_input_fill'
             search_text=(', '.join([address['line1'],address['city'],address['region'],requested_zip]) if address else requested_zip)
             field.fill(search_text)
             address_tokens=street_tokens(address['line1']) if address else []
@@ -196,7 +202,15 @@ def establish_location(page, requested_zip, allow_unverified):
                 if observed==requested_zip:break
                 page.wait_for_timeout(bounded_ms(400))
         except DeadlineExceeded:raise
-        except Exception as e:address_failure=type(e).__name__
+        except Exception as e:
+            address_failure=type(e).__name__
+            # A wall can appear after opening the picker. Classify it again;
+            # do not misreport an authorization requirement as a missing input.
+            dialogs=page.get_by_role('dialog')
+            if dialogs.count():
+                try:kind=classify_dialog(dialogs.first.inner_text(timeout=bounded_ms(1200)))
+                except Exception:kind='unknown_dialog'
+                if kind in ('login_required','provider_blocked'):raise ConnectorError(kind,'Provider requires authorized access after opening its address control.')
     observed=observed_location(page)
     verified=observed==requested_zip and (not address or address_selected)
     if address and not address_selected:raise ConnectorError('location_required','Provider did not acknowledge the submitted address at '+address_stage+('. '+address_failure if address_failure else '')+'. save_clicked='+str(save_clicked)+', active_street_match='+str(active_matches)+', suggestion_zip_match='+str(suggestion_matches)+'. Complete the address or authorized session setup.')
