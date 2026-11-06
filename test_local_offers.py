@@ -130,3 +130,69 @@ class LocalOfferApiTests(unittest.TestCase):
         fixture=OfferCorrectnessTests();q=fixture.quote();q['s']['created']=time.time();q['s']['expires']=time.time()+300;api.RESULTS['s']=q['s']
         code,r=self.post('/api/v1/savings',fixture.refs());self.assertEqual(code,200);self.assertEqual(r['savings'],1.5)
         code,r=self.post('/api/v1/savings',{**fixture.refs(),'price':1});self.assertEqual(code,422)
+
+
+    def test_address_job_to_savings_and_address_switch(self):
+        from location_context import current_location
+        from provider_session import request_context_id
+        from urllib.request import Request
+
+        fixture = OfferCorrectnessTests()
+
+        def provider(zip_code, queries, retailer, allow_unverified):
+            location = current_location(zip_code)
+            self.assertTrue(location.get('address'))
+            self.assertFalse(allow_unverified)
+            return {
+                'items': [fixture.item(), fixture.item('target', '4.19')],
+                'location': {'requested_zip': zip_code, 'observed_zip': zip_code,
+                             'verified': True, 'context_id': request_context_id(location)},
+            }
+
+        def search(zip_code, street):
+            path = '/api/v1/search/jobs'
+            code, job = self.post(path, {
+                'location': {'postal_code': zip_code, 'country_code': 'US',
+                             'address': {'line1': street, 'city': 'St. Louis', 'region': 'MO'}},
+                'queries': ['Coca Cola'], 'mode': 'auto',
+            })
+            self.assertEqual(code, 202)
+            request = Request(self.url + path + '/' + job['job_id'],
+                              headers={'Authorization': 'Bearer ' + job['job_token']})
+            until = time.monotonic() + 5
+            while True:
+                with urlopen(request, timeout=5) as response:
+                    poll = json.load(response)
+                if poll['status'] not in ('queued', 'running'):
+                    break
+                self.assertLess(time.monotonic(), until, poll)
+                time.sleep(0.01)
+            self.assertEqual(poll['status'], 'succeeded', poll)
+            result = poll['result']
+            self.assertEqual(result['location']['observed_zip'], zip_code)
+            self.assertTrue(all(item['local_offer_eligible'] for item in result['items']))
+            return result
+
+        def reference(result, index):
+            return {'search_id': result['search_id'], 'item_id': result['items'][index]['id']}
+
+        with patch.dict(os.environ, {'CONNECTOR_ENABLED': 'true'}), patch.object(
+            api, 'search_browser', side_effect=provider
+        ) as fetch:
+            first = search('63129', '100 Test Street')
+            repeat = search('63129', '100 Test Street')
+            second = search('63119', '200 Test Street')
+            self.assertTrue(repeat['cache']['hit'])
+            self.assertEqual(fetch.call_count, 2)
+
+        offers = [reference(first, 0), reference(repeat, 1)]
+        for quantity, expected in ((1, 0.50), (2, 1.00), (3, 1.50)):
+            code, result = self.post('/api/v1/savings', {'offers': offers, 'quantity': quantity})
+            self.assertEqual((code, result.get('savings')), (200, expected))
+        code, result = self.post('/api/v1/savings', {
+            'offers': [offers[0], reference(second, 1)], 'quantity': 1,
+        })
+        self.assertEqual((code, result.get('error')), (409, 'mixed_location_context'))
+        api.RESULTS[first['search_id']]['expires'] = time.time() - 1
+        code, result = self.post('/api/v1/savings', {'offers': offers, 'quantity': 1})
+        self.assertEqual((code, result.get('error')), (409, 'price_expired'))
