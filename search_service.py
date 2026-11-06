@@ -59,7 +59,8 @@ class SearchService:
         acquired=False
         if not locked:
             started=time.monotonic()
-            if not self.lock.acquire(timeout=deadline.bounded_seconds(15)):raise ConnectorError('busy','Provider is occupied. Retry shortly.')
+            queue_budget=65 if coalesce and mode=='refresh' else 15
+            if not self.lock.acquire(timeout=deadline.bounded_seconds(queue_budget)):raise ConnectorError('busy','Provider is occupied. Retry shortly.')
             acquired=True;emit('browser_queue',provider=self.provider,duration_ms=round((time.monotonic()-started)*1000))
         try:
             for q in list(missing):
