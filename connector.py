@@ -159,7 +159,7 @@ def establish_location(page, requested_zip, allow_unverified):
             search_text=(', '.join([address['line1'],address['city'],address['region'],requested_zip]) if address else requested_zip)
             field.fill(search_text)
             address_tokens=street_tokens(address['line1']) if address else []
-            suggestion_pattern=r'^'+r'\s+'.join(map(re.escape,address_tokens)) if address else '^'+requested_zip+r'\b'
+            suggestion_pattern=r'^'+r'\s+'.join(map(re.escape,address_tokens)) if address else r'\b'+requested_zip+r'\b'
             option=page.get_by_role('button',name=re.compile(suggestion_pattern,re.I))
             address_stage='address_suggestion'
             option.first.wait_for(state='visible',timeout=bounded_ms(15000))
