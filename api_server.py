@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from connector import ConnectorError
 from isolated_runner import search_browser, stop_all
+from foodspark import search_live
 from savings import calculate as calculate_savings, SavingsError
 
 ROOT = Path(__file__).parent
@@ -56,7 +57,7 @@ def validate(data):
 SPEC = json.loads((ROOT/'openapi.json').read_text())
 
 from search_service import SearchService, merge_parts
-SEARCH=SearchService(CATALOG,CACHE,LOCK,lambda *args:search_browser(*args))
+SEARCH=SearchService(CATALOG,CACHE,LOCK,lambda *args:search_live(*args, search_browser))
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
