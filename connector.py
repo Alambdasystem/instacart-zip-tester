@@ -299,14 +299,22 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
     items=[];warnings=[];locations=[];diagnostics=[];retailers={}
     started=time.monotonic()
     emit('search_started',provider='instacart',query_count=len(queries))
+    emit('search_stage',provider='instacart',stage='playwright_start')
     with sync_playwright() as p:
+        emit('search_stage',provider='instacart',stage='chromium_launch')
         browser=p.chromium.launch(headless=True,timeout=bounded_ms(30000),args=['--disable-dev-shm-usage'])
 
+        emit('search_stage',provider='instacart',stage='session_load')
         try:session_state=load_state()
         except SessionConfigError as e:
             browser.close();raise ConnectorError('session_configuration_invalid',str(e))
-        context=browser.new_context(locale='en-US',**({'storage_state':session_state} if session_state is not None else {}));page=context.new_page();page.set_default_timeout(5000)
+        emit('search_stage',provider='instacart',stage='context_create')
+        context=browser.new_context(locale='en-US',**({'storage_state':session_state} if session_state is not None else {}))
+        emit('search_stage',provider='instacart',stage='page_create')
+        page=context.new_page();page.set_default_timeout(5000)
+        emit('search_stage',provider='instacart',stage='route_install')
         page.route('**/*',lambda route:route.abort() if route.request.resource_type in ('image','media','font') else route.continue_())
+        emit('search_stage_complete',provider='instacart',stage='browser_setup',duration_ms=round((time.monotonic()-started)*1000))
         def finish():
             for r in retailers.values():r['products_returned']=sum(i['retailer']==r['id'] for i in items)
             observed_values={o for o,v in locations}
