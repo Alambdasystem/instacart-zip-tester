@@ -176,9 +176,10 @@ def establish_location(page, requested_zip, allow_unverified):
                     while not save.first.is_enabled() and time.monotonic()<save_deadline:page.wait_for_timeout(bounded_ms(400))
                     save_enabled=save.first.is_enabled()
                     if save_enabled:
+                        address_stage='save_address_click'
+                        save.first.click(timeout=bounded_ms(4000))
                         save_clicked=True
                         address_stage='save_address_acknowledgment'
-                        save.first.click(timeout=bounded_ms(4000))
                         dialog=page.get_by_role('dialog')
                         if dialog.count():dialog.first.wait_for(state='hidden',timeout=bounded_ms(12000))
                 # Saving may unmount/remount the modal before updating the header.
