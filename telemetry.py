@@ -6,4 +6,3 @@ def emit(event,**fields):
     row={'event':event,'at':round(time.time(),3),'request_id':REQUEST_ID.get()}
     row.update({k:v for k,v in fields.items() if k in allowed})
     print(json.dumps(row,separators=(',',':')),flush=True)
-
