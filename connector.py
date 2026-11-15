@@ -10,8 +10,9 @@ from collections import defaultdict, deque
 from urllib.parse import quote, urlparse, parse_qs
 
 class ConnectorError(Exception):
-    def __init__(self, status, message):
+    def __init__(self, status, message, diagnostic=None):
         self.status, self.message = status, message
+        self.diagnostic = diagnostic or {}
         super().__init__(message)
 
 def matches_query(name,query):
@@ -175,9 +176,10 @@ def establish_location(page, requested_zip, allow_unverified):
                     while not save.first.is_enabled() and time.monotonic()<save_deadline:page.wait_for_timeout(bounded_ms(400))
                     save_enabled=save.first.is_enabled()
                     if save_enabled:
+                        address_stage='save_address_click'
+                        save.first.click(timeout=bounded_ms(4000))
                         save_clicked=True
                         address_stage='save_address_acknowledgment'
-                        save.first.click(timeout=bounded_ms(4000))
                         dialog=page.get_by_role('dialog')
                         if dialog.count():dialog.first.wait_for(state='hidden',timeout=bounded_ms(12000))
                 # Saving may unmount/remount the modal before updating the header.
@@ -213,7 +215,10 @@ def establish_location(page, requested_zip, allow_unverified):
                 if kind in ('login_required','provider_blocked'):raise ConnectorError(kind,'Provider requires authorized access after opening its address control.')
     observed=observed_location(page)
     verified=observed==requested_zip and (not address or address_selected)
-    if address and not address_selected:raise ConnectorError('location_required','Provider did not acknowledge the submitted address at '+address_stage+('. '+address_failure if address_failure else '')+'. save_clicked='+str(save_clicked)+', active_street_match='+str(active_matches)+', suggestion_zip_match='+str(suggestion_matches)+'. Complete the address or authorized session setup.')
+    if address and not address_selected:
+        diagnostic={'address_substage':address_stage,'save_clicked':save_clicked,'save_enabled':save_enabled,'active_street_match':active_matches,'suggestion_zip_match':suggestion_matches}
+        if address_failure:diagnostic['error_type']=address_failure
+        raise ConnectorError('location_required','Provider did not acknowledge the submitted address. Complete the address or authorized session setup.',diagnostic)
     if not verified and not allow_unverified:
         raise ConnectorError('location_required','Instacart did not confirm the requested ZIP in its active address control. A delivery address or authorized session may be required.')
     if not verified:
@@ -397,7 +402,7 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
             emit('search_failed',provider='instacart',stage=stage,status='provider_timeout',duration_ms=round((time.monotonic()-started)*1000))
             raise ConnectorError('provider_timeout','Instacart timed out while '+stage+'.')
         except ConnectorError as e:
-            emit('search_failed',provider='instacart',stage=stage,status=e.status,duration_ms=round((time.monotonic()-started)*1000))
+            emit('search_failed',provider='instacart',stage=stage,status=e.status,duration_ms=round((time.monotonic()-started)*1000),**e.diagnostic)
             raise
         finally:
             emit('search_finished',provider='instacart',duration_ms=round((time.monotonic()-started)*1000),item_count=len(items))
