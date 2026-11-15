@@ -35,6 +35,30 @@ class ConnectorTelemetryTests(unittest.TestCase):
         self.assertNotIn('5430 Telegraph Road',output.getvalue())
         self.assertNotIn('secret',output.getvalue())
 
+    def test_save_click_failure_is_not_reported_as_clicked(self):
+        page=Mock();page.locator.return_value.inner_text.return_value=''
+        control=Mock();control.count.return_value=1
+        control.first.get_attribute.return_value='current address: 67570.'
+        field=Mock();option=Mock();save=Mock()
+        option.first.inner_text.return_value='5430 Telegraph Road, St. Louis MO 63129'
+        save.count.return_value=1;save.first.is_enabled.return_value=True
+        save.first.click.side_effect=TimeoutError('detached')
+        def role(kind,**kwargs):
+            if kind=='dialog':return Empty()
+            if kind=='textbox':return field
+            pattern=kwargs['name'].pattern
+            if pattern.startswith('^current address'):return control
+            if pattern.startswith('^Save address'):return save
+            return option
+        page.get_by_role.side_effect=role
+        set_location({'postal_code':'63129','country_code':'US','address':{'line1':'5430 Telegraph Road','city':'St. Louis','region':'MO'}})
+        try:
+            with self.assertRaises(ConnectorError) as caught:establish_location(page,'63129',False)
+        finally:set_location(None)
+        self.assertEqual(caught.exception.diagnostic['address_substage'],'save_address_click')
+        self.assertTrue(caught.exception.diagnostic['save_enabled'])
+        self.assertFalse(caught.exception.diagnostic['save_clicked'])
+        self.assertEqual(caught.exception.diagnostic['error_type'],'TimeoutError')
+
 
 if __name__=='__main__':unittest.main()
-
