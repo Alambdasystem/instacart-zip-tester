@@ -406,4 +406,3 @@ def search_browser(zip_code, queries, retailer='', allow_unverified=False):
         finally:
             emit('search_finished',provider='instacart',duration_ms=round((time.monotonic()-started)*1000),item_count=len(items))
             context.close();browser.close()
-
