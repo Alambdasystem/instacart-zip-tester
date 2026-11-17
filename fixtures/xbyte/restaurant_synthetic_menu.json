@@ -1,0 +1,36 @@
+{
+  "fixture_type": "synthetic",
+  "fixture_note": "Wholly fictional test data. Menu names, prices, address, URLs and timings are chosen only for offline assertions.",
+  "request_log": {
+    "request_time": "2000-01-01 00:00:00",
+    "status": 200,
+    "process_time": 0.01
+  },
+  "response": {
+    "results": {
+      "restaurant_name": "Fixture Menu Cafe",
+      "restaurant_url": "https://www.yelp.com/biz/fixture-menu-cafe",
+      "address": "123 Fixture Lane, Fixture City, ZZ 00000 (synthetic)",
+      "categories": [
+        {
+          "category": "Fixture Dishes",
+          "products": [
+            {
+              "product_name": "Fixture Side Salad",
+              "product_description": "Fictional small salad used for an exact listed-price assertion.",
+              "product_price": "$6.40",
+              "product_url": "https://www.yelp.com/menu/fixture-menu-cafe/item/fixture-side-salad"
+            },
+            {
+              "product_name": "Fixture Soup",
+              "product_description": "Fictional soup used for a separate menu-item assertion.",
+              "product_price": "$7.80",
+              "product_url": "https://www.yelp.com/menu/fixture-menu-cafe/item/fixture-soup"
+            }
+          ]
+        }
+      ]
+    },
+    "message": "Success"
+  }
+}

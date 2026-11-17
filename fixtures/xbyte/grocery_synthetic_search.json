@@ -1,0 +1,33 @@
+{
+  "request_log": {
+    "status": 200,
+    "process_time": 0.1
+  },
+  "response": {
+    "store_details": {
+      "Store Name": "Fixture Market",
+      "Store Slug": "target-corp",
+      "Store Location ID": "fixture-market",
+      "Delivery Address": "100 Fixture Avenue",
+      "Delivery Zip Code": "63131"
+    },
+    "results": [
+      {
+        "Product Name": "Synthetic Snacks Potato Chips",
+        "Brand": "Synthetic Snacks",
+        "Price": "$12.50",
+        "Unit Size": "18 x 1 oz",
+        "Price Per Unit": "$0.69/oz",
+        "Availability": "inStock"
+      },
+      {
+        "Product Name": "Fixture Brand Tortilla Chips",
+        "Brand": "Fixture Brand",
+        "Price": "$3.20",
+        "Unit Size": "8 oz",
+        "Price Per Unit": "$0.40/oz",
+        "Availability": "inStock"
+      }
+    ]
+  }
+}

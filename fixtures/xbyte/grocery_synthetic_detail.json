@@ -1,0 +1,27 @@
+{
+  "request_log": {
+    "status": 200,
+    "process_time": 0.1
+  },
+  "response": {
+    "results": [
+      {
+        "Store Details": {
+          "ShopName": "Fixture Wholesale",
+          "Street": "101 Fixture Road",
+          "Zipcode": "63131"
+        },
+        "Result": {
+          "Product Name": "Fixture Brand Boneless Chicken Thighs",
+          "Product URL": "https://www.instacart.com/products/10002-fixture-chicken?retailerSlug=fixture-wholesale",
+          "Brand": "Fixture Brand",
+          "Price": "$21.00 /pkg (est.)",
+          "Unit Size": "1 each",
+          "Price Per Unit": "$4.20/lb",
+          "Availability": "inStock",
+          "product_images": []
+        }
+      }
+    ]
+  }
+}

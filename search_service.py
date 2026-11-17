@@ -5,6 +5,7 @@ from connector import ConnectorError
 from telemetry import emit
 from provider_session import request_context_id
 from location_context import current_location
+from foodspark import refresh_evidence
 
 def merge_parts(parts,hit_queries,fetched_queries):
     payloads=[p for p,m in parts];metas=[m for p,m in parts]
@@ -37,11 +38,11 @@ class SearchService:
                 if self.provider=='instacart':
                     loc=payload.get('location',{})
                     local=bool(loc.get('verified') and loc.get('observed_zip')==z and loc.get('context_id')==request_context_id(current_location(z)))
-                    payload={**payload,'items':[{**i,'price_fresh':meta['expires_in']>0,'price_expires_in':meta['expires_in'],
+                    payload={**payload,'items':[refresh_evidence({**i,'price_fresh':meta['expires_in']>0,'price_expires_in':meta['expires_in'],'cache_expires_in':meta['expires_in'],
                         'age_seconds':meta['age_seconds'],'requested_zip':z,'observed_zip':loc.get('observed_zip'),
                         'location_verified':local,'context_id':loc.get('context_id'),
                         'local_offer_eligible':bool(local and meta['expires_in']>0 and i.get('price_basis_verified')),
-                        'discovery_only':not bool(local and meta['expires_in']>0 and i.get('price_basis_verified'))} for i in payload['items']]}
+                        'discovery_only':not bool(local and meta['expires_in']>0 and i.get('price_basis_verified'))}) for i in payload['items']]}
                 meta={**meta,'source':entries[q][1].get('source',meta.get('source','live'))}
                 if failure:payload={**payload,'partial_errors':[failure],'warnings':payload.get('warnings',[])+[failure['message']]}
                 parts.append((payload,meta))

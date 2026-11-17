@@ -1,0 +1,29 @@
+{
+  "fixture_type": "synthetic",
+  "fixture_note": "Wholly fictional test data. These restaurants, URLs and timings are not observed offers or coverage evidence.",
+  "request_log": {
+    "request_time": "2000-01-01 00:00:00",
+    "status": 200,
+    "process_time": 0.01
+  },
+  "response": {
+    "results": [
+      {
+        "restaurant_name": "Fixture Cafe One",
+        "restaurant_url": "https://www.yelp.com/biz/fixture-cafe-one",
+        "has_menu": true
+      },
+      {
+        "restaurant_name": "Fixture Pizzeria",
+        "restaurant_url": "https://www.yelp.com/biz/fixture-pizzeria",
+        "has_menu": true
+      },
+      {
+        "restaurant_name": "Fixture Cafe Without Menu",
+        "restaurant_url": "https://www.yelp.com/biz/fixture-cafe-without-menu",
+        "has_menu": false
+      }
+    ],
+    "message": "Success"
+  }
+}

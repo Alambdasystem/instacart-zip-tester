@@ -1,0 +1,3 @@
+# Test-only; runtime remains Python stdlib plus the existing browser dependency.
+jsonschema==4.26.0
+openapi-spec-validator==0.9.0
