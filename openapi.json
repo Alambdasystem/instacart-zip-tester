@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "InstaSearch API Contract",
-    "version": "0.8.1",
-    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. Local baskets and provider links do not transfer items or place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels. Optional v0.7 freshness scheduling preserves five-minute quote expiry. Catalog descriptions remain browsable with expired prices explicitly labeled; background refresh never renews an existing search_id. Cache-only never schedules refresh."
+    "version": "0.8.2",
+    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. Local baskets and provider links do not transfer items or place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels. Optional v0.7 freshness scheduling preserves five-minute quote expiry. Catalog descriptions remain browsable with expired prices explicitly labeled; background refresh never renews an existing search_id. Cache-only never schedules refresh. Optional X-Byte adapters preserve the existing provider contract behind disabled rollout controls. X-Byte grocery observations identify Instacart marketplace prices; local cache lifetime does not prove source capture freshness. Restaurant discovery and targeted menu lookup currently support the documented Yelp demo only. DoorDash/Uber Eats contracts and cross-platform matching remain unavailable. Missing prices, identifiers, capture times and links remain explicit."
   },
   "servers": [
     {
@@ -39,7 +39,7 @@
         "summary": "Search live products or reuse five-minute cache",
         "responses": {
           "200": {
-            "description": "Success",
+            "description": "ok/partial snapshot, cache_miss, or typed no_match; decode the status-specific shape.",
             "content": {
               "application/json": {
                 "schema": {
@@ -49,7 +49,7 @@
             }
           },
           "422": {
-            "description": "Invalid request or location_required",
+            "description": "Invalid request, location limitation, unsupported operation or no_coverage.",
             "content": {
               "application/json": {
                 "schema": {
@@ -59,7 +59,7 @@
             }
           },
           "429": {
-            "description": "Busy or rate limited; back off",
+            "description": "Busy, rate_limited or provider_quota; bounded backoff only.",
             "content": {
               "application/json": {
                 "schema": {
@@ -69,7 +69,7 @@
             }
           },
           "502": {
-            "description": "Provider failure; inspect status",
+            "description": "Provider authentication, response-body error, invalid response or upstream failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -79,7 +79,17 @@
             }
           },
           "503": {
-            "description": "Connector disabled",
+            "description": "Connector/pilot disabled, configuration missing or demo budget exhausted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Provider timeout or shared read deadline exceeded.",
             "content": {
               "application/json": {
                 "schema": {
@@ -236,6 +246,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Expired, unverified, unselectable, missing-price, conditional-price or incompatible-context offer; no provider cart is mutated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         },
         "requestBody": {
@@ -275,7 +295,7 @@
             }
           },
           "409": {
-            "description": "Price expired; search again",
+            "description": "Expired, unverified, unselectable, missing-price, conditional-price or incompatible-context offer; no provider cart is mutated.",
             "content": {
               "application/json": {
                 "schema": {
@@ -921,6 +941,305 @@
           }
         }
       }
+    },
+    "/api/v1/products/details": {
+      "post": {
+        "operationId": "getSelectedProductDetails",
+        "tags": [
+          "Products"
+        ],
+        "summary": "Fetch details for a product from a server-held search",
+        "description": "The client sends references, not a vendor URL, price or credentials. X-Byte requires a usable product URL from that original item and its saved street-address context. A missing URL returns typed product_link_unavailable; the service does not invent it or transfer a cart. The request example uses fictional fixture references and is not a live restaurant, product or location.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductDetailsRequest"
+              },
+              "example": {
+                "search_id": "fixture-search-id",
+                "item_id": "fixture-product-id"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Details observation, existing merchant-link observation, or no matching details. Existing basket prices are unchanged.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProductDetailsResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/NoMatchResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "search_expired or product_link_unavailable; repeat the search or display that details cannot be opened.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "status": "product_link_unavailable",
+                  "error": "product_link_unavailable",
+                  "message": "X-Byte search did not supply a usable product URL. Product details cannot be fetched.",
+                  "items": []
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid reference, unsupported/missing original address, or no_coverage.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Provider quota or rate limit; do not retry immediately.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Provider authentication, body-level error, invalid response or upstream failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Pilot disabled, server configuration missing or demo request budget exhausted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded provider request timed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/restaurants/search": {
+      "post": {
+        "operationId": "discoverRestaurants",
+        "tags": [
+          "Restaurants"
+        ],
+        "summary": "Discover Yelp restaurant candidates by ZIP and keyword",
+        "description": "Only the documented Yelp demo route is implemented, behind the restaurant rollout control. Offsets are 0,10,20,...,1000. Discovery and menu retrieval remain separate; fetch menus only for relevant returned candidates. DoorDash/Uber Eats and cross-platform item matching are not available. The request example uses fictional fixture references and is not a live restaurant, product or location.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestaurantSearchRequest"
+              },
+              "example": {
+                "zip": "00000",
+                "query": "pizza",
+                "platform": "yelp",
+                "page_no": 0
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Candidate restaurants or no_match; no verified price or item match is implied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestaurantSearchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request, unsupported_platform or no_coverage.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or provider quota exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Provider auth/error, invalid response or restaurant identity mismatch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Restaurant rollout disabled, missing server configuration or demo request budget exhausted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded provider request timed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/restaurants/menu": {
+      "post": {
+        "operationId": "getDiscoveredRestaurantMenu",
+        "tags": [
+          "Restaurants"
+        ],
+        "summary": "Fetch a selected restaurant menu and assess listed prices",
+        "description": "Use discovery_id, restaurant_url and platform from the same discovery within its 300-second lifetime. Prices and budget arithmetic stay on the server. The default lt operator means strictly under; lte means at most. Starting-at qualifiers, missing required modifiers, unverified modifier choice semantics and unknown fees remain explicit. A listed subtotal below budget never proves a full order meets it. The request example uses fictional fixture references and is not a live restaurant, product or location.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestaurantMenuRequest"
+              },
+              "example": {
+                "discovery_id": "fixture-discovery-id",
+                "restaurant_url": "https://www.yelp.com/biz/fixture-pizzeria",
+                "platform": "yelp",
+                "terms": [
+                  "pizza"
+                ],
+                "budget": 15,
+                "budget_operator": "lt"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Relevant menu items or no_match, with explicit price/budget uncertainty.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestaurantMenuResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "discovery_expired, discovery_mismatch or menu_unavailable. Repeat discovery or select a returned restaurant with a menu.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request, unsupported_platform or no_coverage.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or provider quota exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Provider auth/error, invalid response or restaurant identity mismatch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Restaurant rollout disabled, missing server configuration or demo request budget exhausted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded provider request timed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -929,7 +1248,8 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "string",
+            "description": "Opaque observation/snapshot reference. Not a verified SKU, UPC or proof of product equivalence."
           },
           "name": {
             "type": "string"
@@ -941,14 +1261,19 @@
             ]
           },
           "price": {
-            "type": "number",
-            "description": "Observed USD unit price; excludes taxes and fees. Use decimal arithmetic for totals."
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Observed listed amount, or null when missing/unparseable. Interpret with price_kind, currency, price_basis and price_label. Never replace null with zero. Merchandise arithmetic is performed by the API and excludes taxes/fees."
           },
           "currency": {
-            "type": "string",
-            "enum": [
-              "USD"
-            ]
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Source currency, or null when unestablished. Cart validation requires verified USD amounts; display must not assume USD for unknown values."
           },
           "retailer": {
             "type": "string"
@@ -966,8 +1291,12 @@
             "type": "string"
           },
           "url": {
-            "type": "string",
-            "format": "uri"
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Validated merchant product link when supplied. A missing link cannot be reconstructed from a name, observation ID or UPC. Opening it does not transfer a cart."
           },
           "image_url": {
             "type": [
@@ -978,7 +1307,11 @@
             "description": "Optional HTTPS thumbnail. Display a placeholder if missing or loading fails."
           },
           "availability": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Provider availability label when present. It is not proof of current stock; inspect availability_verified and availability_captured_at."
           },
           "requested_zip": {
             "type": "string"
@@ -987,20 +1320,24 @@
             "type": "boolean"
           },
           "price_fresh": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "For X-Byte, true only when timezone-qualified source capture/expiry evidence is valid and any local cache lifetime remains positive. Newly retrieved or cached data alone is insufficient. Other providers retain their existing freshness policy."
           },
           "price_expires_in": {
-            "type": "number"
+            "type": "number",
+            "description": "Remaining usable price lifetime. X-Byte returns zero when source freshness is unknown or stale; otherwise bounded by both source expiry and cache lifetime."
           },
           "age_seconds": {
-            "type": "number"
+            "type": "number",
+            "description": "Age of the local observation/cache record when supplied; not retailer capture age."
           },
           "last_seen": {
             "type": "string",
             "format": "date-time"
           },
           "selectable": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Server decision for selection/cart eligibility. Unknown price, unverified charge basis, stale/unknown capture evidence, incompatible context or unsupported currency can disable selection."
           },
           "price_basis": {
             "type": "string",
@@ -1046,6 +1383,16 @@
               },
               "unit": {
                 "type": "string"
+              },
+              "currency": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string",
+                "description": "Origin of the unit-price evidence, e.g. provider_label."
               }
             },
             "required": [
@@ -1064,9 +1411,12 @@
             "type": "string",
             "enum": [
               "fresh",
-              "expired"
+              "expired",
+              "capture_time_unknown",
+              "stale_snapshot",
+              "snapshot"
             ],
-            "description": "Catalog observation freshness; selection additionally requires compatible provider context."
+            "description": "Existing browser observations use fresh/expired. X-Byte uses capture_time_unknown when valid source capture/expiry evidence is absent, stale_snapshot when source expiry has passed, and snapshot when source evidence is fresh. This source status does not renew cache TTL or authorize selection."
           },
           "price_basis_verified": {
             "type": "boolean"
@@ -1078,7 +1428,11 @@
             ]
           },
           "price_label": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Original listed-price text, including estimate or starting-at qualifiers."
           },
           "price_unit_evidence": {
             "type": "string"
@@ -1094,6 +1448,172 @@
               "string",
               "null"
             ]
+          },
+          "provider": {
+            "type": "string",
+            "description": "Existing provider identity, such as instacart. X-Byte does not create a new client provider selector."
+          },
+          "data_provider": {
+            "type": "string",
+            "description": "Data supplier, e.g. xbyte_foodspark, separate from marketplace and retailer."
+          },
+          "platform": {
+            "type": "string",
+            "description": "Marketplace that the observation describes, e.g. instacart."
+          },
+          "price_source": {
+            "type": "string",
+            "description": "Price provenance. X-Byte demo grocery uses instacart_marketplace, not direct retailer pricing."
+          },
+          "brand": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_product_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Supplied stable provider ID, or an ID parsed from its validated product URL; null if unavailable."
+          },
+          "upc": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^(?:[0-9]{8}|[0-9]{12,14})$",
+            "description": "Supplier UPC when valid and provided; never derived from the observation ID."
+          },
+          "identity_kind": {
+            "type": "string",
+            "description": "X-Byte normalizes identity_kind=observation; this is not a verified cross-store product mapping."
+          },
+          "pack_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "Explicit pack count or an unambiguous leading Nx size declaration; null when unknown."
+          },
+          "provider_location_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Supplier store-location ID if supplied; it does not establish branch verification."
+          },
+          "store": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "location_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "delivery_zip": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "branch_verified": {
+                "type": "boolean"
+              },
+              "address": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "description": "Preserved provider store context. Branch verification is independent of delivery ZIP acknowledgment."
+          },
+          "unit_price_label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Original unit-price text, preserved independently of the main charge basis."
+          },
+          "price_kind": {
+            "type": "string",
+            "enum": [
+              "exact",
+              "estimated",
+              "starting_at",
+              "unknown"
+            ]
+          },
+          "data_kind": {
+            "type": "string",
+            "description": "X-Byte reports snapshot; scheduled daily refresh is not a real-time guarantee."
+          },
+          "captured_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Timezone-qualified provider observation/capture timestamp when explicitly supplied. Vendor request time is not substituted."
+          },
+          "source_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Explicit provider validity limit; null when not established."
+          },
+          "retrieved_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "API receipt/normalization time. It does not establish source freshness."
+          },
+          "source_freshness": {
+            "type": "string",
+            "enum": [
+              "fresh",
+              "stale",
+              "unknown"
+            ]
+          },
+          "cache_expires_in": {
+            "type": "number",
+            "description": "Local cache reuse lifetime, separate from source capture validity and price_expires_in."
+          },
+          "availability_verified": {
+            "type": "boolean"
+          },
+          "availability_captured_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "refresh_schedule_verified": {
+            "type": "boolean"
+          },
+          "details_status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "product_link_unavailable"
+            ],
+            "description": "Whether the supplied product URL permits a details lookup; not a promise that the upstream call succeeds."
+          },
+          "handoff": {
+            "$ref": "#/components/schemas/MerchantHandoff"
           }
         },
         "required": [
@@ -1178,13 +1698,23 @@
           },
           "ttl_seconds": {
             "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
           "hit",
           "age_seconds",
           "expires_in"
-        ]
+        ],
+        "description": "Local reuse metadata only. Its TTL does not prove provider capture time, live inventory or an exact checkout quote."
       },
       "SearchRequest": {
         "type": "object",
@@ -1250,83 +1780,6 @@
         ],
         "description": "Provide query or queries. If both are present, queries takes precedence.",
         "additionalProperties": false
-      },
-      "SearchResponse": {
-        "type": "object",
-        "properties": {
-          "search_id": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "ok"
-            ]
-          },
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Product"
-            }
-          },
-          "location": {
-            "$ref": "#/components/schemas/Location"
-          },
-          "warnings": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "retrieved_at": {
-            "type": "string"
-          },
-          "cache": {
-            "$ref": "#/components/schemas/Cache"
-          },
-          "expires_in": {
-            "type": "number"
-          },
-          "cart_updated": {
-            "type": "boolean"
-          },
-          "retailers": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "name": {
-                  "type": "string"
-                },
-                "products_returned": {
-                  "type": "integer"
-                },
-                "branch_verified": {
-                  "type": "boolean"
-                }
-              }
-            }
-          },
-          "diagnostics": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "additionalProperties": true
-            }
-          }
-        },
-        "required": [
-          "search_id",
-          "status",
-          "items",
-          "location",
-          "cache",
-          "expires_in",
-          "cart_updated"
-        ]
       },
       "CatalogResponse": {
         "type": "object",
@@ -1410,7 +1863,7 @@
           }
         },
         "required": [],
-        "description": "Error code is error OR status (legacy connector). Android must read error ?? status. Do not treat empty items on non-2xx as success."
+        "description": "Error code is error OR status (legacy connector). Android must read error ?? status. Do not treat empty items on non-2xx as success. X-Byte error codes distinguish no_coverage, provider_auth, provider_quota, provider_timeout, provider_error, provider_unavailable, invalid_response, provider_disabled, budget_exhausted and product_link_unavailable. no_match uses a separate HTTP 200 empty envelope."
       },
       "SelectionRequest": {
         "type": "object",
@@ -1637,6 +2090,9 @@
           "freshness_v07": {
             "type": "boolean",
             "description": "Whether the optional Instacart freshness policy is enabled."
+          },
+          "xbyte_enabled": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -1712,7 +2168,11 @@
             "type": "boolean"
           },
           "provider_product_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Supplied stable identity when available; a missing identity cannot establish product equivalence."
           },
           "provider_location_id": {
             "type": [
@@ -1728,6 +2188,221 @@
           },
           "price_fresh": {
             "type": "boolean"
+          },
+          "data_provider": {
+            "type": "string",
+            "description": "Data supplier, e.g. xbyte_foodspark, separate from marketplace and retailer."
+          },
+          "platform": {
+            "type": "string",
+            "description": "Marketplace that the observation describes, e.g. instacart."
+          },
+          "price_source": {
+            "type": "string",
+            "description": "Price provenance. X-Byte demo grocery uses instacart_marketplace, not direct retailer pricing."
+          },
+          "brand": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pack_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "Explicit pack count or an unambiguous leading Nx size declaration; null when unknown."
+          },
+          "upc": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^(?:[0-9]{8}|[0-9]{12,14})$",
+            "description": "Supplier UPC when valid and provided; never derived from the observation ID."
+          },
+          "identity_kind": {
+            "type": "string",
+            "description": "X-Byte normalizes identity_kind=observation; this is not a verified cross-store product mapping."
+          },
+          "store": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "location_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "delivery_zip": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "branch_verified": {
+                "type": "boolean"
+              },
+              "address": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "description": "Preserved provider store context. Branch verification is independent of delivery ZIP acknowledgment."
+          },
+          "price_kind": {
+            "type": "string",
+            "enum": [
+              "exact",
+              "estimated",
+              "starting_at",
+              "unknown"
+            ]
+          },
+          "price_label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Original listed-price text, including estimate or starting-at qualifiers."
+          },
+          "price_basis": {
+            "type": "string",
+            "enum": [
+              "per_item",
+              "per_lb",
+              "per_oz",
+              "per_fl_oz",
+              "per_kg",
+              "per_g",
+              "per_ct",
+              "unspecified"
+            ]
+          },
+          "price_basis_verified": {
+            "type": "boolean"
+          },
+          "unit_price": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "amount": {
+                "type": "number",
+                "minimum": 0
+              },
+              "unit": {
+                "type": "string"
+              },
+              "currency": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string",
+                "description": "Origin of the unit-price evidence, e.g. provider_label."
+              }
+            },
+            "required": [
+              "amount",
+              "unit"
+            ]
+          },
+          "unit_price_label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Original unit-price text, preserved independently of the main charge basis."
+          },
+          "price_status": {
+            "type": "string",
+            "enum": [
+              "fresh",
+              "expired",
+              "capture_time_unknown",
+              "stale_snapshot",
+              "snapshot"
+            ],
+            "description": "Existing browser observations use fresh/expired. X-Byte uses capture_time_unknown when valid source capture/expiry evidence is absent, stale_snapshot when source expiry has passed, and snapshot when source evidence is fresh. This source status does not renew cache TTL or authorize selection."
+          },
+          "captured_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Timezone-qualified provider observation/capture timestamp when explicitly supplied. Vendor request time is not substituted."
+          },
+          "source_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Explicit provider validity limit; null when not established."
+          },
+          "source_freshness": {
+            "type": "string",
+            "enum": [
+              "fresh",
+              "stale",
+              "unknown"
+            ]
+          },
+          "cache_expires_in": {
+            "type": "number",
+            "description": "Local cache reuse lifetime, separate from source capture validity and price_expires_in."
+          },
+          "availability": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Provider availability label when present. It is not proof of current stock; inspect availability_verified and availability_captured_at."
+          },
+          "availability_verified": {
+            "type": "boolean"
+          },
+          "availability_captured_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "refresh_schedule_verified": {
+            "type": "boolean"
+          },
+          "details_status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "product_link_unavailable"
+            ],
+            "description": "Whether the supplied product URL permits a details lookup; not a promise that the upstream call succeeds."
+          },
+          "handoff": {
+            "$ref": "#/components/schemas/MerchantHandoff"
           }
         },
         "additionalProperties": true
@@ -2108,37 +2783,6 @@
                 "$ref": "#/components/schemas/SearchResponse"
               },
               {
-                "type": "object",
-                "required": [
-                  "status",
-                  "items",
-                  "missing_queries",
-                  "location",
-                  "cache"
-                ],
-                "properties": {
-                  "status": {
-                    "const": "cache_miss"
-                  },
-                  "items": {
-                    "type": "array",
-                    "maxItems": 0
-                  },
-                  "missing_queries": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  },
-                  "location": {
-                    "$ref": "#/components/schemas/Location"
-                  },
-                  "cache": {
-                    "$ref": "#/components/schemas/Cache"
-                  }
-                }
-              },
-              {
                 "type": "null"
               }
             ]
@@ -2158,6 +2802,971 @@
             }
           }
         }
+      },
+      "MerchantHandoff": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "merchant_link",
+              "unavailable"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
+          "cart_transfer_supported": {
+            "const": false
+          }
+        },
+        "required": [
+          "kind",
+          "url",
+          "cart_transfer_supported"
+        ],
+        "description": "Merchant navigation only; no provider cart transfer, order or checkout session is created."
+      },
+      "SuccessfulSearchResponse": {
+        "type": "object",
+        "properties": {
+          "search_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "partial"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            }
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "retrieved_at": {
+            "type": "string"
+          },
+          "cache": {
+            "$ref": "#/components/schemas/Cache"
+          },
+          "expires_in": {
+            "type": "number"
+          },
+          "cart_updated": {
+            "type": "boolean"
+          },
+          "retailers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "products_returned": {
+                  "type": "integer"
+                },
+                "branch_verified": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "missing_queries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "coverage_complete": {
+            "type": "boolean"
+          },
+          "partial_errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message"
+              ]
+            },
+            "description": "Sanitized provider failures for missing query portions while compatible existing results remain available."
+          }
+        },
+        "required": [
+          "search_id",
+          "status",
+          "items",
+          "location",
+          "cache",
+          "expires_in",
+          "cart_updated"
+        ],
+        "description": "Search snapshot with items and server-issued references. partial means some queries were missing; inspect missing_queries and cache.partial_hit. This does not establish complete store coverage."
+      },
+      "CacheMissSearchResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "const": "cache_miss"
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 0
+          },
+          "missing_queries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location"
+          },
+          "cache": {
+            "$ref": "#/components/schemas/Cache"
+          }
+        },
+        "required": [
+          "status",
+          "items",
+          "missing_queries",
+          "location",
+          "cache"
+        ],
+        "description": "Cache-only miss. No search_id or usable selection snapshot is issued, and no provider fetch is scheduled."
+      },
+      "NoMatchResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "const": "no_match"
+          },
+          "error": {
+            "const": "no_match"
+          },
+          "message": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 0
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location"
+          }
+        },
+        "required": [
+          "status",
+          "error",
+          "message",
+          "items"
+        ],
+        "description": "A completed lookup with no accepted relevant match. This is distinct from no coverage, authentication failure, timeout or provider failure. No selection token or zero-price substitute is issued."
+      },
+      "SearchResponse": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SuccessfulSearchResponse"
+          },
+          {
+            "$ref": "#/components/schemas/CacheMissSearchResponse"
+          },
+          {
+            "$ref": "#/components/schemas/NoMatchResponse"
+          }
+        ],
+        "description": "HTTP 200 search union. Decode status before accessing search_id, cache or expires_in: no_match and cache_miss have deliberately smaller empty-result envelopes."
+      },
+      "ProductDetailsRequest": {
+        "type": "object",
+        "properties": {
+          "search_id": {
+            "type": "string",
+            "description": "Reference from the original unexpired search."
+          },
+          "item_id": {
+            "type": "string",
+            "description": "Item within that same search."
+          }
+        },
+        "required": [
+          "search_id",
+          "item_id"
+        ],
+        "additionalProperties": false
+      },
+      "ProductDetailsResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "enum": [
+              "ok",
+              "merchant_link_only"
+            ]
+          },
+          "item": {
+            "$ref": "#/components/schemas/Product"
+          },
+          "search_item_id": {
+            "type": "string"
+          },
+          "quote_updated": {
+            "const": false
+          },
+          "cart_updated": {
+            "const": false
+          },
+          "provider_cart_updated": {
+            "const": false
+          },
+          "handoff": {
+            "$ref": "#/components/schemas/MerchantHandoff"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "item",
+          "handoff",
+          "cart_updated",
+          "provider_cart_updated"
+        ],
+        "description": "X-Byte detail results are observations only and do not replace the original search quote. For another existing provider, merchant_link_only returns its current observation and navigation link without a new upstream details call."
+      },
+      "RestaurantSearchRequest": {
+        "type": "object",
+        "properties": {
+          "zip": {
+            "type": "string",
+            "pattern": "^[0-9]{5}$"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "platform": {
+            "type": "string",
+            "enum": [
+              "yelp"
+            ],
+            "default": "yelp",
+            "description": "Only the documented Yelp demo is wired. Other platform values return unsupported_platform; DoorDash/Uber Eats contracts are pending."
+          },
+          "page_no": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000,
+            "multipleOf": 10,
+            "default": 0
+          }
+        },
+        "required": [
+          "zip",
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "RestaurantLocation": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_zip": {
+            "type": "string"
+          },
+          "verified": {
+            "const": false
+          }
+        },
+        "required": [
+          "address",
+          "requested_zip",
+          "verified"
+        ],
+        "description": "Discovery ZIP and any listed address do not establish current delivery coverage or a verified restaurant branch."
+      },
+      "Restaurant": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "restaurant_name": {
+            "type": "string"
+          },
+          "restaurant_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "platform": {
+            "const": "yelp"
+          },
+          "provider": {
+            "const": "foodspark_yelp"
+          },
+          "source": {
+            "const": "foodspark"
+          },
+          "location": {
+            "$ref": "#/components/schemas/RestaurantLocation"
+          },
+          "has_menu": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "captured_at": {
+            "type": "null"
+          },
+          "retrieved_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "freshness": {
+            "const": "unknown"
+          },
+          "order_url": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "restaurant_name",
+          "restaurant_url",
+          "platform",
+          "provider",
+          "source",
+          "location",
+          "has_menu",
+          "captured_at",
+          "retrieved_at",
+          "freshness",
+          "order_url"
+        ]
+      },
+      "RestaurantSearchResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "enum": [
+              "ok",
+              "no_match"
+            ]
+          },
+          "provider": {
+            "const": "foodspark_yelp"
+          },
+          "source": {
+            "const": "foodspark"
+          },
+          "platform": {
+            "const": "yelp"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Restaurant"
+            }
+          },
+          "discovery_id": {
+            "type": "string",
+            "description": "Opaque, process-local identifier binding returned URLs to a platform and ZIP. Expires in 300 seconds or on restart."
+          },
+          "expires_in": {
+            "type": "integer",
+            "const": 300
+          },
+          "requested_zip": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "page_no": {
+            "type": "integer",
+            "multipleOf": 10
+          },
+          "next_page_no": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "multipleOf": 10
+          },
+          "has_more": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "coverage_complete": {
+            "const": false
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "status",
+          "provider",
+          "source",
+          "platform",
+          "items",
+          "discovery_id",
+          "expires_in",
+          "requested_zip",
+          "query",
+          "page_no",
+          "next_page_no",
+          "has_more",
+          "coverage_complete",
+          "warnings"
+        ],
+        "description": "Keyword discovery produces candidate restaurants, not verified menu matches. A non-null next_page_no is the next bounded offset to try, not a guarantee of further results; has_more remains null until an empty page."
+      },
+      "RestaurantMenuRequest": {
+        "type": "object",
+        "properties": {
+          "discovery_id": {
+            "type": "string"
+          },
+          "restaurant_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "A Yelp restaurant_url returned by that discovery; arbitrary URLs and platform changes are rejected."
+          },
+          "platform": {
+            "type": "string",
+            "enum": [
+              "yelp"
+            ],
+            "default": "yelp"
+          },
+          "terms": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "minItems": 1,
+            "maxItems": 5,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "description": "Relevant menu terms; only selected restaurant menus are fetched. Each distinct term is treated as a requested component for budget assessment."
+          },
+          "budget": {
+            "oneOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 10000,
+                "multipleOf": 0.01
+              },
+              {
+                "type": "string",
+                "pattern": "^\\$?[0-9]+(?:\\.[0-9]{1,2})?$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional positive USD budget, at most 10000 and two decimal places. Decimal strings are accepted. Final order fees remain unknown."
+          },
+          "budget_operator": {
+            "type": "string",
+            "enum": [
+              "lt",
+              "lte"
+            ],
+            "default": "lt",
+            "description": "lt means strictly under the budget; lte means at most the budget."
+          }
+        },
+        "required": [
+          "discovery_id",
+          "restaurant_url"
+        ],
+        "additionalProperties": false
+      },
+      "RequiredMenuModifier": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "price": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "listed_price_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "required": {
+            "const": true
+          }
+        },
+        "required": [
+          "name",
+          "price",
+          "listed_price_text",
+          "currency",
+          "required"
+        ],
+        "description": "Only supplied required modifiers are preserved. A flat list is not assumed to be additive or exhaustive."
+      },
+      "ModifierComponentOverlap": {
+        "type": "object",
+        "properties": {
+          "modifier_item_id": {
+            "type": "string"
+          },
+          "modifier_name": {
+            "type": "string"
+          },
+          "requested_term": {
+            "type": "string"
+          },
+          "separate_item_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "modifier_item_id",
+          "modifier_name",
+          "requested_term",
+          "separate_item_ids"
+        ]
+      },
+      "RestaurantBudgetAssessment": {
+        "type": "object",
+        "properties": {
+          "budget": {
+            "type": "number"
+          },
+          "currency": {
+            "const": "USD"
+          },
+          "budget_operator": {
+            "enum": [
+              "lt",
+              "lte"
+            ]
+          },
+          "budget_limit_type": {
+            "enum": [
+              "exclusive",
+              "maximum"
+            ]
+          },
+          "status": {
+            "enum": [
+              "over_budget",
+              "uncertain"
+            ]
+          },
+          "selected_item_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unmatched_terms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "listed_subtotal": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "minimum_listed_subtotal": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "known_required_modifier_total": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "minimum_subtotal_with_known_required_modifiers": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "minimum_subtotal_established": {
+            "type": "boolean"
+          },
+          "modifier_component_overlaps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModifierComponentOverlap"
+            }
+          },
+          "listed_subtotal_within_budget": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "order_within_budget": {
+            "enum": [
+              false,
+              null
+            ],
+            "description": "Never true in this pilot. False only when a supported lower bound already violates the budget; otherwise null because the full order cannot be established."
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "selection_method": {
+            "enum": [
+              "lowest_listed_base_price_per_requested_term",
+              "single_menu_item"
+            ]
+          },
+          "selection_is_optimization": {
+            "const": false
+          },
+          "scope": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "budget",
+          "currency",
+          "budget_operator",
+          "budget_limit_type",
+          "status",
+          "selected_item_ids",
+          "unmatched_terms",
+          "listed_subtotal",
+          "minimum_listed_subtotal",
+          "known_required_modifier_total",
+          "minimum_subtotal_with_known_required_modifiers",
+          "minimum_subtotal_established",
+          "modifier_component_overlaps",
+          "listed_subtotal_within_budget",
+          "order_within_budget",
+          "reason_codes",
+          "selection_method",
+          "selection_is_optimization",
+          "scope"
+        ],
+        "description": "Server-side decimal arithmetic over the selected listed items. Starting-at prices are lower bounds. Missing modifiers, unknown choice/additive semantics, overlapping components, tax/fees, availability and checkout uncertainty prevent a positive full-order budget claim. Selection is by lowest known base price for each requested term, not complete-order optimization."
+      },
+      "RestaurantMenuItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "menu_item": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restaurant_name": {
+            "type": "string"
+          },
+          "restaurant_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "location": {
+            "$ref": "#/components/schemas/RestaurantLocation"
+          },
+          "provider": {
+            "const": "foodspark_yelp"
+          },
+          "source": {
+            "const": "foodspark"
+          },
+          "platform": {
+            "const": "yelp"
+          },
+          "price": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "listed_price_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "price_type": {
+            "enum": [
+              "exact",
+              "starting_at",
+              "unknown"
+            ]
+          },
+          "price_source": {
+            "const": "yelp_menu"
+          },
+          "required_modifiers": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/RequiredMenuModifier"
+            }
+          },
+          "modifiers_complete": {
+            "type": "boolean"
+          },
+          "modifier_pricing_semantics": {
+            "enum": [
+              "additive",
+              "one_of",
+              "unknown"
+            ]
+          },
+          "modifier_pricing_semantics_verified": {
+            "type": "boolean"
+          },
+          "menu_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
+          "order_url": {
+            "type": "null"
+          },
+          "captured_at": {
+            "type": "null"
+          },
+          "retrieved_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "freshness": {
+            "const": "unknown"
+          },
+          "availability": {
+            "type": "null"
+          },
+          "cart_transfer_supported": {
+            "const": false
+          },
+          "budget_assessment": {
+            "$ref": "#/components/schemas/RestaurantBudgetAssessment"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "menu_item",
+          "description",
+          "category",
+          "restaurant_name",
+          "restaurant_url",
+          "location",
+          "provider",
+          "source",
+          "platform",
+          "price",
+          "currency",
+          "listed_price_text",
+          "price_type",
+          "price_source",
+          "required_modifiers",
+          "modifiers_complete",
+          "modifier_pricing_semantics",
+          "modifier_pricing_semantics_verified",
+          "menu_url",
+          "order_url",
+          "captured_at",
+          "retrieved_at",
+          "freshness",
+          "availability",
+          "cart_transfer_supported"
+        ],
+        "description": "Relevant menu observation. Unknown prices remain null. Modifier fields express evidence when supplied; absent fields never establish modifier completeness."
+      },
+      "RestaurantMenuResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "enum": [
+              "ok",
+              "no_match"
+            ]
+          },
+          "provider": {
+            "const": "foodspark_yelp"
+          },
+          "source": {
+            "const": "foodspark"
+          },
+          "platform": {
+            "const": "yelp"
+          },
+          "restaurant": {
+            "$ref": "#/components/schemas/Restaurant"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RestaurantMenuItem"
+            }
+          },
+          "budget_operator": {
+            "enum": [
+              "lt",
+              "lte"
+            ]
+          },
+          "budget_assessment": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RestaurantBudgetAssessment"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cross_platform_matching_supported": {
+            "const": false
+          },
+          "cart_transfer_supported": {
+            "const": false
+          },
+          "captured_at": {
+            "type": "null"
+          },
+          "retrieved_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "freshness": {
+            "const": "unknown"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "status",
+          "provider",
+          "source",
+          "platform",
+          "restaurant",
+          "items",
+          "budget_operator",
+          "budget_assessment",
+          "cross_platform_matching_supported",
+          "cart_transfer_supported",
+          "captured_at",
+          "retrieved_at",
+          "freshness",
+          "warnings"
+        ],
+        "description": "Targeted menu lookup bound to a restaurant from recent discovery. With budget, each returned item receives its own assessment; the top-level multi-component assessment is present only when terms are also supplied, otherwise null."
       }
     },
     "securitySchemes": {

@@ -12,6 +12,8 @@ from search_cache import SearchCache
 from search_service import SearchService
 import satsuma_provider as satsuma
 import vercel_provider as vercel
+from foodspark import refresh_evidence
+import xbyte_transport
 
 class Comparison:
     def __init__(self,catalog,instacart_cache,browser_lock,fetch_instacart):
@@ -78,7 +80,7 @@ class Comparison:
             rows=db.execute('SELECT at,provider,zip,outcome,http_status,item_count,cache_hit FROM provider_activity ORDER BY at DESC LIMIT 50').fetchall()
             used=db.execute('SELECT COUNT(*) FROM provider_calls').fetchone()[0]
             vused=db.execute('SELECT COUNT(*) FROM vercel_calls').fetchone()[0]
-        return {'instacart_session':session_status(),'capabilities':CAPABILITIES,'vercel_proxy':{'configured':bool(os.getenv('VERCEL_MEALME_API_KEY')),'base_url':vercel.BASE_URL,
+        return {'instacart_session':session_status(),'capabilities':CAPABILITIES,'xbyte_foodspark':xbyte_transport.status(),'vercel_proxy':{'configured':bool(os.getenv('VERCEL_MEALME_API_KEY')),'base_url':vercel.BASE_URL,
                 'read_budget':max(0,min(100,int(os.getenv('VERCEL_MEALME_READ_BUDGET','0')))),
                 'attempts_in_database':vused,'background_ingestion':False,'live_contract_verified':False,'documented_routes_verified':True},'satsuma_configured':bool(os.getenv('SATSUMA_API_KEY')),'satsuma_base_url':satsuma.BASE_URL,
                 'satsuma_background_ingestion':False,'read_attempts_in_database':used,
@@ -134,7 +136,9 @@ class Comparison:
         items=list({i['id']:i for i in items if any(matches_query(i.get('name',''),q) for q in queries)}.values())
         if not items and not error:status='not_cached' if mode in ('catalog','cache_only') else 'empty'
         # Comparison is observational; existing Instacart cart flow remains separate.
-        for item in items:item['selectable']=False
+        for item in items:
+            refresh_evidence(item)
+            item['selectable']=False
         self.activity(provider,z,status,items,upstream, bool(cache_hits) and all(cache_hits))
         return {'cache_sources':sorted({i.get('cache_source','catalog_discovery') for i in items}),'coverage_complete':False,'source':'catalog_discovery' if mode=='catalog' else 'cache_or_live','provider':provider,'status':status,'error':error,'items':items,'location':location,
                 'retailers':list(found_retailers.values()),'diagnostics':diagnostics,

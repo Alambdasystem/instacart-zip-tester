@@ -1,8 +1,9 @@
-# InstaSearch API Contract v0.3.0
+# InstaSearch API Contract v0.8.2
 
 Base URL: https://alambda-grocery-api.onrender.com/
 Interactive documentation: /docs
 Machine-readable source of truth: /openapi.json (OpenAPI 3.1)
+This version describes the v0.8.2 implementation. Check the running /health version and rollout state before assuming a capability is enabled. The optional X-Byte path remains disabled by default.
 All POST bodies: Content-Type: application/json. UTF-8 JSON responses.
 
 ## Integration sequence
@@ -17,10 +18,10 @@ All POST bodies: Content-Type: application/json. UTF-8 JSON responses.
 ## Model rules
 
 - Product.size is nullable. Product.image_url: nullable HTTPS URL. Load asynchronously with your existing image library, cache by URL, and show a placeholder for null/HTTP failure. Images remain hosted by the provider and can change or expire.
-- Product.price: JSON number, USD unit price. Convert to a decimal type for money calculations; never trust client-computed totals for checkout.
-- Product.price_fresh, price_expires_in, age_seconds, last_seen and selectable are catalog fields. last_seen is a UTC ISO 8601 timestamp. Live products do not include those fields; use the response expires_in and location.verified instead.
+- Product.price and currency are nullable. Preserve price_kind, price_label and price_basis; an observed amount can be exact, estimated, starting_at or unknown. Never decode a missing price as $0, assume USD for null currency, or assume the main amount is per item. The API owns monetary calculations; Android displays its returned totals.
+- Product.price_fresh, price_expires_in, age_seconds and selectable can appear in both catalog and fresh-search products. last_seen is a UTC timestamp for the local observation when supplied. For X-Byte, source capture/expiry evidence is separate from retrieval time and cache TTL; cache freshness alone cannot make its price fresh. Missing optional fields must not crash decoding.
 - Catalog: only selectable=true items can be submitted using the returned search_id. Stale metadata may remain visible, but stale prices aren't valid for cart validation. A catalog search_id with zero selectable items doesn't create a usable selection snapshot.
-- Live response: status=ok, search_id, items, location, cache, expires_in, cart_updated=false. Catalog response: status=catalog, search_id, items, location, cache, warnings, discovery, catalog.
+- SearchResponse is a status union. ok/partial supplies search_id, items, location, cache, expires_in and cart_updated=false; partial also identifies missing_queries. cache_miss supplies empty items, missing_queries, location and cache, with no search_id. no_match supplies empty items, error=no_match and message, with no quote/cache token. Catalog response remains status=catalog, search_id, items, location, cache, warnings, discovery and catalog.
 - Location: requested_zip is the requested partition, observed_zip can be null, verified is authoritative. Never label unverified results as local inventory. Strict mode may return 422 location_required. Unverified demo results require an explicit user toggle; don't silently retry with allow_unverified_location=true.
 - Preserve unknown fields for forward compatibility where practical. Missing optional fields must not crash Android decoding.
 
@@ -41,13 +42,13 @@ Live browser capacity is one concurrent search and three fresh searches per minu
 
 ## Cache and operational boundaries
 
-Price freshness is at most 300 seconds, non-sliding. Return cache.hit, partial_hit, hit_queries, fetched_queries, age_seconds and expires_in when present. Re-reading doesn't extend freshness. New ZIP/term payloads can enqueue collector jobs within bounded capacity; enqueue isn't a promise of fresh or geographically verified data. Background refresh only runs while this free service is awake. Catalog and snapshots aren't durable across deployment/restart on the current free setup.
+Local exact-cache/quote lifetime is at most 300 seconds, non-sliding. X-Byte source freshness additionally requires explicit source capture and expiry evidence; reading a daily snapshot now does not establish a fresh retailer price. Return cache.hit, partial_hit, hit_queries, fetched_queries, age_seconds and expires_in when present. Re-reading doesn't extend freshness. New ZIP/term payloads can enqueue collector jobs within bounded capacity; enqueue isn't a promise of fresh or geographically verified data. Background refresh only runs while this free service is awake. Catalog and snapshots aren't durable across deployment/restart on the current free setup.
 
 POST /api/v1/cache/invalidate is an operator action, not a normal Android search step. It accepts a retailer slug or * plus optional ZIP and expires related price snapshots. GET /api/v1/ingestion/status and /api/v1/catalog/export are diagnostics.
 
 ## Authentication and provider scope
 
-This is an unauthenticated prototype; don't embed an invented API key or send customer credentials/payment details. Production integration needs an agreed authenticated gateway and durable storage. Current deployed connector is Instacart only; no MealMe provider selector or normalized comparison endpoint is claimed by this contract. `source` identifies the existing connector, not a provider choice request.
+This is an unauthenticated prototype; don't embed an invented API key or send customer credentials/payment details. Production integration needs an agreed authenticated gateway and durable storage. The core grocery search keeps the existing Instacart provider interface. Optional provider comparison is documented below. X-Byte supplies an optional Instacart marketplace observation path under the existing provider identity; source=foodspark and data_provider=xbyte_foodspark identify the supplier. A client cannot enable the pilot or choose a new vendor route through the search body.
 
 Both cart_updated and provider_cart_updated remain false. No Instacart basket mutation, ordering, payment, or delivery promise is provided.
 
@@ -146,3 +147,121 @@ It recomputes merchandise subtotals and savings from server-held prices. It requ
 ### Android acceptance still required
 
 On the installed Android build, use the actual delivery address in 63129, run a cancellable fresh search, and retain request IDs. Find the same packaged product at two merchants with explicit primary charge-unit evidence. Call `/api/v1/savings`, compare the displayed quantity/subtotals/savings against the returned decimals, change quantity, and verify recalculation. Wait until the earliest quote expires and verify the savings claim is removed until refresh succeeds. Repeat with a mismatched-ZIP observation, unknown price unit and different package size: none may create a savings claim. Record build number, merchant/product IDs, observed ZIP, price labels, expiry, API result and screenshots. API fixture tests alone do not satisfy this device acceptance.
+
+
+## v0.8.2: grocery observations and targeted restaurant menus
+
+### Rollout and existing flows
+
+The X-Byte grocery and restaurant capabilities use server-side rollout controls and credentials. They remain off by default. Existing providers remain available. Grocery uses the existing search, catalog, comparison, selection and basket contracts; it does not introduce a new Android provider selector. When enabled and configured, the grocery demo path requires a specific retailer slug and a structured street address in `location.address`. ZIP-only and other existing search contexts retain their established path. Do not silently substitute a different address or retailer.
+
+Keep vendor pilot checks and the existing Android search/basket regression as separate acceptance exercises. The examples in this section use fictional fixture references and ZIP `00000`; replace them only with values from an authorized runtime search.
+
+### Nullable decoding, source evidence and selection
+
+`price`, `currency`, `url`, `availability`, `price_label`, `size`, `brand`, `pack_count`, `provider_product_id`, `upc` and `provider_location_id` can be null. `unit_price` is a nullable object with amount/unit and optional currency/source. Show missing prices and links explicitly. Disable selection when `selectable=false`; a successful search or HTTP 200 is not permission to calculate a basket from every returned item.
+
+Preserve the following metadata through display, local basket references and diagnostics:
+
+| Field | Meaning |
+| --- | --- |
+| `id`, `identity_kind` | Opaque observation identity; not a stable SKU/UPC or proof of equivalence |
+| `provider`, `data_provider`, `platform`, `source` | Existing provider identity, supplier, marketplace and connector provenance |
+| `price_source` | Demo grocery is `instacart_marketplace`; it is not a direct retailer price |
+| `brand`, `size`, `pack_count`, `provider_product_id`, `upc` | Evidence needed to compare like-for-like offers; missing fields stay unknown |
+| `store`, `provider_location_id`, `observed_zip`, `location_verified` | Store/location evidence; ZIP acknowledgment does not prove branch or delivery serviceability |
+| `price_label`, `price_kind`, `price_basis`, `price_basis_verified`, `unit_price_label` | Original amount/qualifier, charge basis and unit-price evidence |
+| `captured_at`, `source_expires_at`, `source_freshness` | Explicit source observation validity; nullable timestamps require timezone information |
+| `retrieved_at`, `age_seconds`, `cache_expires_in` | Receipt/local-cache timing; separate from source validity |
+| `availability`, `availability_captured_at`, `availability_verified` | Supplied stock label and its evidence, without an invented stock-freshness claim |
+
+X-Byte `price_status` is `capture_time_unknown`, `stale_snapshot` or `snapshot`; the existing browser path retains `fresh`/`expired`. `snapshot` means the source evidence is currently valid, while cache TTL and selection requirements still apply. `price_fresh=true` requires valid source capture/expiry evidence and positive cache lifetime when present. `price_expires_in` is zero for unknown/stale source validity. Vendor request time and receipt time must not be substituted for capture time. A scheduled snapshot does not establish a refresh timezone, caching rights, refresh guarantees or live stock.
+
+The API rejects ineligible selections and totals with typed 409 errors such as `source_freshness_unknown`, `source_stale`, `offer_unselectable`, `price_unavailable`, `price_unit_unverified`, `weighted_quantity_required` and `conditional_price`. Keep an estimated or starting-at amount visible as an observation without treating it as an exact basket price. Re-run search and require reconfirmation when a quote expires; detail retrieval does not update a quote.
+
+For savings, X-Byte offers require a shared supplier product ID or UPC plus matching brand, package size, explicit pack count, platform and price source. A lexical match or equal display name cannot establish equivalence. Existing same-context, fresh-quote and charge-unit checks still apply. Marketplace and direct-retailer observations must stay separate.
+
+### Product details and merchant navigation
+
+```http
+POST /api/v1/products/details
+Content-Type: application/json
+```
+
+```json
+{"search_id":"fixture-search-id","item_id":"fixture-product-id"}
+```
+
+The server resolves the original item and saved address context. The request accepts no arbitrary merchant URL, client price or vendor credential. An unavailable search returns `409 search_expired`. An X-Byte result without a usable vendor product URL returns:
+
+```json
+{
+  "status":"product_link_unavailable",
+  "error":"product_link_unavailable",
+  "message":"X-Byte search did not supply a usable product URL. Product details cannot be fetched.",
+  "items":[]
+}
+```
+
+That response is HTTP 409. Do not invent a URL from the product name or observation ID. A successful details response returns `status=ok`, `item`, `search_item_id`, `quote_updated=false`, `cart_updated=false`, `provider_cart_updated=false` and `handoff`. The details item is an observation and remains unselectable; search again to replace the original quote. For another existing provider, `status=merchant_link_only` returns the known item and handoff without a new vendor details fetch. An upstream empty matching result can return the typed HTTP 200 `no_match` envelope.
+
+`handoff.kind` is `merchant_link` or `unavailable`, `handoff.url` is nullable, and `handoff.cart_transfer_supported=false`. Opening a merchant link navigates to that merchant. It does not transfer the local basket, create a checkout session or place an order.
+
+### Restaurant discovery and menu sequence
+
+This implementation supports **Yelp only**. DoorDash, Uber Eats and other platforms return `422 unsupported_platform` until separately implemented. Do not present them as connected or merge offers across platforms.
+
+1. Discover candidates by keyword, ZIP, platform and offset:
+
+   ```json
+   {"zip":"00000","query":"pizza","platform":"yelp","page_no":0}
+   ```
+
+   Send this to `POST /api/v1/restaurants/search`. Offsets are 0, 10, 20, and so on up to 1000. Keep the returned `discovery_id` and each returned `restaurant_url`. Discovery candidates alone do not establish a menu-item match, price or location coverage. `has_more=null` means unknown; `next_page_no` is an offset to try, not proof of another page. `status=no_match` is an empty candidate result.
+
+2. Fetch the menu only for a relevant candidate from that discovery:
+
+   ```json
+   {
+     "discovery_id":"fixture-discovery-id",
+     "restaurant_url":"https://www.yelp.com/biz/fixture-pizzeria",
+     "platform":"yelp",
+     "terms":["pizza"],
+     "budget":15,
+     "budget_operator":"lt"
+   }
+   ```
+
+   Send this to `POST /api/v1/restaurants/menu`. The discovery lifetime is 300 seconds and is lost on restart. A changed URL/platform returns `409 discovery_mismatch`; an expired discovery returns `409 discovery_expired`. A candidate explicitly reporting no menu returns `409 menu_unavailable`. Terms are optional, at most five distinct nonempty strings of up to 120 characters. The budget is optional, positive USD, at most 10000 with two decimal places; numeric or decimal-string input is accepted.
+
+The menu result preserves restaurant name/location, menu item/description, listed price text, price type, platform, and validated menu link where available. Missing prices and order links remain null; missing stock and source capture evidence remain unknown. `cross_platform_matching_supported=false` and `cart_transfer_supported=false` are explicit.
+
+### Budget and required-modifier semantics
+
+The default `budget_operator=lt` means **strictly under** the limit; `lte` means **at most**. Use `lt` for “cheeseburger and fries under $15.” An exact $15 subtotal fails the strict-under comparison.
+
+The API uses decimal arithmetic and identifies its selected item IDs. A multi-term assessment selects the lowest known listed base price for each requested term; this is not a full-order optimization. Words in a description may establish relevance but do not prove an included order component. A positive full-order budget claim is never produced by this pilot because taxes, fees, availability and final checkout price are unverified.
+
+- `listed_subtotal` requires exact listed amounts for the selected components. `minimum_listed_subtotal` may describe starting-at lower bounds.
+- `required_modifiers=null` and `modifiers_complete=false` mean the modifier evidence is missing. Do not equate them with no paid modifiers.
+- Supplied modifiers are summed only when completeness, all prices, and verified additive semantics support that sum. A `one_of` list or unknown semantics does not establish an additive charge total.
+- `modifier_component_overlaps` identifies a required modifier that may overlap a separately requested item; do not double-count it or claim a lower bound without resolving the overlap.
+- `order_within_budget` remains null when uncertain, or false when an established lower bound already violates the budget. `status` is `uncertain` or `over_budget`; `listed_subtotal_within_budget=true` alone is not a completed-order claim.
+
+Show the returned `reason_codes` near the amount. Current reasons include missing listed price, starting-at price, unmatched requested items, unknown required modifiers, unverified modifier selection, component overlap and unknown taxes/fees. With a budget but no terms, each menu item has an individual assessment and the top-level assessment is null.
+
+### X-Byte errors, retries and acceptance
+
+| HTTP | Code | Client behavior |
+| --- | --- | --- |
+| 200 | `no_match` | Show no accepted match; do not substitute unrelated recommendations or a $0 item |
+| 409 | `product_link_unavailable`, `discovery_expired`, `discovery_mismatch`, `menu_unavailable` | Show the specific limitation or repeat discovery/search as appropriate |
+| 422 | `no_coverage`, `location_required`, `location_unsupported`, `unsupported_platform`, `invalid_request` | Correct input or show unsupported coverage; a format failure is not proof of local stock absence |
+| 429 | `provider_quota`, `rate_limited` | Stop tight retries and preserve the current observations with their age |
+| 502 | `provider_auth`, `provider_error`, `provider_unavailable`, `invalid_response`, `identity_mismatch` | Show provider failure; authentication/identity failures require investigation |
+| 503 | `provider_disabled`, `not_configured`, `budget_exhausted` | Capability is unavailable; client retries cannot enable it or purchase quota |
+| 504 | `provider_timeout` | Show a bounded timeout; do not start overlapping requests |
+
+The server evaluates HTTP transport status and nested response errors, applies bounded retries and returns a sanitized `X-Request-ID` header. Capture that header for support. Vendor credentials and full vendor request URLs must never be sent by Android or copied into diagnostics.
+
+Fixture tests establish API behavior only. Before enabling this path for the installed Android client, verify nullable DTO decoding, observation/source labels, disabled selection, detail missing-link handling, reference-based basket arithmetic, expiry, and merchant navigation on that build. Run the existing Android search/basket regression separately; a fixture does not establish device acceptance or cart transfer.

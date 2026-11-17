@@ -19,8 +19,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from connector import ConnectorError
 from isolated_runner import search_browser, stop_all
-from foodspark import search_live
-from savings import calculate as calculate_savings, SavingsError
+from foodspark import search_live, details as product_details, refresh_evidence, selected as xbyte_selected
+from savings import calculate as calculate_savings, validate_offer, SavingsError
+import xbyte_transport
+import xbyte_restaurants
 
 ROOT = Path(__file__).parent
 LOCK = PriorityLock()
@@ -30,6 +32,7 @@ FRESHNESS_V07=policy_enabled(ROOT)
 CACHE = SearchCache(ttl=300,independent_expiry=FRESHNESS_V07)
 INVALIDATIONS = {}
 CATALOG = Catalog(os.getenv('CATALOG_PATH',str(Path(os.getenv('RENDER_DISK_MOUNT_PATH','/tmp'))/'alambda-grocery-catalog.sqlite')))
+xbyte_transport.configure_budget(CATALOG.path)
 CACHE.attach(CATALOG,'instacart')
 PLANNER=RefreshPlanner(CACHE) if FRESHNESS_V07 else None
 CACHE.refresh_planner=PLANNER
@@ -37,7 +40,19 @@ OPERATOR_KEY=ensure_credential(CATALOG.path)
 INGESTOR = None
 JOBS=SearchJobs()
 RATE_LOCK=threading.Lock()
-COMPARISON = Comparison(CATALOG,CACHE,LOCK,lambda *a: search_browser(*a))
+COMPARISON = Comparison(CATALOG,CACHE,LOCK,lambda *a: search_live(*a, search_browser))
+
+def provider_http_status(status):
+    if status in ('no_match',):return 200
+    if status in ('busy','rate_limited','provider_quota'):return 429
+    if status in ('provider_disabled','not_configured','budget_exhausted'):return 503
+    if status == 'provider_timeout':return 504
+    if status in ('product_link_unavailable','discovery_expired','discovery_mismatch','menu_unavailable','cancelled'):return 409
+    if status in ('invalid_request','unsupported_platform','unsupported_operation','location_required','location_unsupported','no_coverage'):return 422
+    return 502
+
+def offer_amount(item):
+    return validate_offer(refresh_evidence(item))
 
 def validate(data):
     if not isinstance(data, dict): raise ValueError('Expected a JSON object.')
@@ -61,6 +76,13 @@ SEARCH=SearchService(CATALOG,CACHE,LOCK,lambda *args:search_live(*args, search_b
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
+    def xbyte_read_limit(self):
+        now=time.time();client='xbyte:'+hashlib.sha256(self.client_address[0].encode()).hexdigest()
+        with RATE_LOCK:
+            if len(RATE)>1000:RATE.clear()
+            RATE[client]=[at for at in RATE.get(client,[]) if now-at<60]
+            if len(RATE[client])>=3:raise ConnectorError('rate_limited','Three X-Byte detail/menu/discovery reads per minute.')
+            RATE[client].append(now)
     def handle_one_request(self):
         token=REQUEST_ID.set(uuid.uuid4().hex)
         budget=deadline.begin(120)
@@ -95,7 +117,7 @@ class Handler(BaseHTTPRequestHandler):
             items=CATALOG.search(q,z,retailer,provider=None if provider=='all' else provider,limit=5000 if route.path.endswith('/export') else 100)
             withheld=sum(not i.get('location_verified') or i.get('observed_zip')!=z for i in items) if z and not allow else 0
             if z and not allow:items=[i for i in items if i.get('location_verified') and i.get('observed_zip')==z]
-            for i in items:i['selectable']=i.get('provider','instacart')=='instacart' and isinstance(i.get('price'),(int,float)) and i['price_fresh'] and i.get('context_compatible',False) and i.get('location_verified',False)
+            for i in items:i['selectable']=i.get('selectable',True) and i.get('provider','instacart')=='instacart' and isinstance(i.get('price'),(int,float)) and i['price_fresh'] and i.get('context_compatible',False) and i.get('location_verified',False)
             fresh=[i for i in items if i['selectable']]
             observed={i.get('observed_zip') for i in items}
             location={'requested_zip':z,'observed_zip':next(iter(observed)) if len(observed)==1 else None,'verified':bool(fresh) and all(i.get('location_verified') for i in fresh),'verification_scope':'zip_only','delivery_serviceability_verified':False,'store_branch_verified':False}
@@ -112,7 +134,7 @@ class Handler(BaseHTTPRequestHandler):
                 with CATALOG.db() as db:db.execute('SELECT 1').fetchone()
                 return self.send(200,{'status':'ready','storage_available':Path(CATALOG.path).exists(),'persistent_mount_configured':bool(os.getenv('RENDER_DISK_MOUNT_PATH'))})
             except Exception:return self.send(503,{'status':'not_ready','message':'Catalog storage unavailable'})
-        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.8.1','freshness_v07':FRESHNESS_V07})
+        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.8.2','freshness_v07':FRESHNESS_V07,'xbyte_enabled':xbyte_transport.enabled()})
         if self.path=='/openapi.json': return self.send(200,SPEC)
         if route.path in ('/docs','/swagger','/android-contract.md','/instasearch-contract.md'):
             filename='android-contract.md' if route.path in ('/android-contract.md','/instasearch-contract.md') else 'swagger.html'
@@ -125,6 +147,22 @@ class Handler(BaseHTTPRequestHandler):
             if not 0<size<=10000: raise ValueError('Request body must be 1–10000 bytes.')
             data=json.loads(self.rfile.read(size))
             if not isinstance(data,dict): raise ValueError('Expected a JSON object.')
+            if self.path=='/api/v1/restaurants/search':
+                if set(data)-{'zip','query','platform','page_no'}:raise ValueError('Unknown restaurant discovery fields.')
+                self.xbyte_read_limit()
+                return self.send(200,xbyte_restaurants.discovery(data.get('zip'),data.get('query'),data.get('platform','yelp'),data.get('page_no',0)))
+            if self.path=='/api/v1/restaurants/menu':
+                if set(data)-{'discovery_id','restaurant_url','platform','terms','budget','budget_operator'}:raise ValueError('Unknown menu fields.')
+                self.xbyte_read_limit()
+                return self.send(200,xbyte_restaurants.menu(data.get('discovery_id'),data.get('restaurant_url'),data.get('platform','yelp'),data.get('terms'),data.get('budget'),data.get('budget_operator','lt')))
+            if self.path=='/api/v1/products/details':
+                if set(data)!={'search_id','item_id'} or any(not isinstance(v,str) for v in data.values()):raise ValueError('Use search_id and item_id from a search.')
+                result=RESULTS.get(data['search_id'])
+                if not result:return self.send(409,{'error':'search_expired','message':'Repeat the original search before fetching details.'})
+                item=next((i for i in result['payload']['items'] if i['id']==data['item_id']),None)
+                if not item:raise ValueError('Unknown product for this search.')
+                self.xbyte_read_limit()
+                return self.send(200,product_details(item,result.get('request_location',{})))
             if self.path.startswith('/api/v1/search/jobs/') and self.path.endswith('/cancel'):
                 key=self.path.split('/')[-2]
                 if data!={}:raise ValueError('Cancellation body must be empty.')
@@ -164,6 +202,7 @@ class Handler(BaseHTTPRequestHandler):
                 if browser_mode not in ('auto','refresh','cache_only'):raise ValueError('Invalid browser_mode')
                 z,qs,store,flag=validate(data)
                 if len(qs)!=1:return self.send(422,{'error':'invalid_request','message':'Comparison accepts exactly one query.'})
+                if xbyte_selected(z,store):return self.send(422,{'error':'unsupported_operation','message':'Browser transport diagnostics cannot validate an X-Byte source. Use the ordinary search or compare route.'})
                 client=self.client_address[0];now=time.time()
                 RATE[client]=[t for t in RATE.get(client,[]) if now-t<60]
                 if len(RATE[client])>=3:return self.send(429,{'error':'rate_limited','message':'Three diagnostic/live searches per minute.'})
@@ -178,7 +217,13 @@ class Handler(BaseHTTPRequestHandler):
             now=time.time()
             RESULTS.prune()
             if self.path=='/api/v1/savings':
-                try:return self.send(200,calculate_savings(RESULTS,data))
+                try:
+                    for ref in data.get('offers',[]) if isinstance(data.get('offers'),list) else []:
+                        if isinstance(ref,dict):
+                            result=RESULTS.get(ref.get('search_id'))
+                            if result:
+                                for item in result['payload']['items']:refresh_evidence(item)
+                    return self.send(200,calculate_savings(RESULTS,data))
                 except SavingsError as e:return self.send(409,{'error':e.code,'message':str(e)})
             if self.path=='/api/v1/compare':
                 z,qs,store,flag=validate(data)
@@ -221,7 +266,8 @@ class Handler(BaseHTTPRequestHandler):
                     if not result or time.time()>=result.get('expires',result['created']+300): return self.send(409,{'error':'price_expired','message':'One or more product searches expired. Refresh the affected search before validating the cart.'})
                     item=next((i for i in result['payload']['items'] if i['id']==item_id),None)
                     if not item: raise ValueError('Unknown item.')
-                    selected.append({**item,'search_id':sid,'quantity':qty,'line_total':float((Decimal(str(item['price']))*qty).quantize(Decimal('0.01'))),'location_verified':result['payload']['location']['verified']})
+                    amount=offer_amount(item)
+                    selected.append({**item,'search_id':sid,'quantity':qty,'line_total':float((amount*qty).quantize(Decimal('0.01'))),'location_verified':result['payload']['location']['verified']})
                 contexts={RESULTS.get(i['search_id'])['payload'].get('location',{}).get('context_id') or 'zip:'+str(RESULTS.get(i['search_id'])['payload'].get('location',{}).get('requested_zip')) for i in selected}
                 if len(contexts)>1:return self.send(409,{'error':'mixed_location_context','message':'Keep cart offers in one location context. Refresh the affected searches.'})
                 if INGESTOR:
@@ -239,8 +285,9 @@ class Handler(BaseHTTPRequestHandler):
                 products={p['id']:p for p in result['payload']['items']}
                 if any(i not in products for i in ids): raise ValueError('Unknown product ID for this search.')
                 selected=[products[i] for i in dict.fromkeys(ids)]
+                amounts=[offer_amount(p) for p in selected]
                 if PLANNER:PLANNER.promote(result['payload']['location'],selected)
-                return self.send(200,{'selection_id':str(uuid.uuid4()),'items':selected,'subtotal':float(sum((Decimal(str(p['price'])) for p in selected),Decimal('0')).quantize(Decimal('0.01'))),'currency':'USD','cart_updated':False,'location':result['payload']['location'],'message':'Selection only. Provider cart is unchanged.'})
+                return self.send(200,{'selection_id':str(uuid.uuid4()),'items':selected,'subtotal':float(sum(amounts,Decimal('0')).quantize(Decimal('0.01'))),'currency':'USD','cart_updated':False,'location':result['payload']['location'],'message':'Selection only. Provider cart is unchanged.'})
             if self.path!='/api/v1/search': return self.send(404,{'error':'not_found'})
             if 'providers' in data:return self.send(422,{'error':'invalid_request','message':'Use /api/v1/compare to select providers.'})
             z,qs,store,flag=validate(data)
@@ -265,11 +312,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200,payload)
             except ConnectorError as e:
                 emit('search_failed',provider='instacart',status=e.status)
-                code=429 if e.status in ('busy','rate_limited') else 422 if e.status in ('location_required','location_unsupported') else 409 if e.status=='cancelled' else 502
+                code=provider_http_status(e.status)
                 return self.send(code,{'status':e.status,'error':e.status,'message':e.message,'items':[],'location':{'requested_zip':z,'verified':False}})
+            except deadline.DeadlineExceeded:
+                return self.send(504,{'status':'provider_timeout','error':'provider_timeout','message':'The shared provider read deadline expired.','items':[],'location':{'requested_zip':z,'verified':False}})
             except Exception as e:
                 emit('search_failed',provider='instacart',error_type=type(e).__name__)
                 return self.send(502,{'status':'connector_error','message':'The browser connector failed. No product results were substituted.','items':[]})
+        except ConnectorError as e:return self.send(provider_http_status(e.status),{'status':e.status,'error':e.status,'message':e.message,'items':[]})
+        except SavingsError as e:return self.send(409,{'error':e.code,'message':str(e)})
+        except deadline.DeadlineExceeded:return self.send(504,{'error':'provider_timeout','message':'The bounded provider read deadline expired.'})
         except cancellation.CancelledError:return self.send(409,{'status':'cancelled','message':'Search cancelled.'})
         except (ValueError,TypeError): return self.send(422,{'error':'invalid_request','message':'Use a five-digit zip and 1–3 food queries. See /openapi.json.'})
 

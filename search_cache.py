@@ -29,7 +29,9 @@ class SearchCache:
                 db.execute("DELETE FROM search_snapshots WHERE expires<=?",(self.clock(),))
                 db.execute('DELETE FROM search_snapshots WHERE namespace=? AND key NOT IN (SELECT key FROM search_snapshots WHERE namespace=? ORDER BY expires DESC LIMIT ?)',(self.namespace,self.namespace,self.max_entries))
     def key(self, zip_code, queries, retailer, allow_unverified):
-        return (zip_code, tuple(sorted(set(' '.join(q.casefold().split()) for q in queries))), retailer or '*', allow_unverified, ('v07.0:' if self.independent else 'v06.0:')+context_id(current_location(zip_code))+(':'+session_scope() if self.namespace=='instacart' else ''))
+        from foodspark import cache_scope
+        source = ':' + cache_scope(zip_code, retailer) if self.namespace == 'instacart' else ''
+        return (zip_code, tuple(sorted(set(' '.join(q.casefold().split()) for q in queries))), retailer or '*', allow_unverified, ('v07.0:' if self.independent else 'v06.0:')+context_id(current_location(zip_code))+(':'+session_scope() if self.namespace=='instacart' else '')+source)
     def fence(self,z,db=None):
         if not self.independent:return None
         if db is not None:

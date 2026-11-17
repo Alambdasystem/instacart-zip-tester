@@ -82,6 +82,7 @@ class Catalog:
                 provider=item.get('provider',payload.get('provider','instacart'))
                 identity=((item.get('url') or '').split('?')[0] or item['name']+'|'+str(item.get('size')))+'|'+item.get('retailer','')+'|'+zip_code
                 if provider!='instacart':identity=provider+'|'+str(item.get('provider_location_id'))+'|'+item['id']+'|'+zip_code
+                if item.get('source')=='foodspark':identity+='|data_provider:xbyte_foodspark'
                 location=payload.get('location',{})
                 branch=item.get('provider_location_id',location.get('provider_location_id'))
                 if branch is not None:identity+='|branch:'+str(branch)
@@ -116,6 +117,8 @@ class Catalog:
                 p.update({'age_seconds':max(0,int(now-seen)),'price_fresh':now<expires,'price_expires_in':max(0,int(expires-now)),'last_seen_price':p.get('price'),'price_status':'fresh' if now<expires else 'expired','last_seen':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(seen))})
                 p['local_offer_eligible']=bool(p['price_fresh'] and p['context_compatible'] and p.get('price_basis_verified'))
                 p['discovery_only']=not p['local_offer_eligible']
+                from foodspark import refresh_evidence
+                refresh_evidence(p, now)
                 output.append(p)
                 if len(output)>=limit:break
         return output
