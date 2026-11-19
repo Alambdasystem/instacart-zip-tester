@@ -103,6 +103,8 @@ def validate_request(data, comparison=False):
         location = normalize_location(data)
     except (ValueError, TypeError):
         raise TestRequestError('invalid_location', 'Use a five-digit ZIP and, if supplied, a complete US address.') from None
+    if not re.fullmatch(r'[0-9]{5}', location['postal_code']):
+        raise TestRequestError('invalid_location', 'ZIP must contain five ASCII digits.')
     if location.get('coordinates'):
         raise TestRequestError('invalid_location', 'These adapters accept ZIP and optional street address; coordinates are not supported.')
     options = data.get('options', {})

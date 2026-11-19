@@ -45,7 +45,8 @@ class ProviderTestsUnit(unittest.TestCase):
     def test_no_fallback_mode_and_strict_provider_fields(self):
         for update in ({'fallback_policy': 'auto'}, {'provider': 'instacart'}, {'provider': ['northfork']},
                        {'options': {'api_key': 'never-accept-a-client-key'}}, {'mode': 'auto'},
-                       {'location': {'postal_code': '90210'}}, {'queries': []}, {'queries': ['x'] * 4}):
+                       {'location': {'postal_code': '90210'}}, {'queries': []}, {'queries': ['x'] * 4},
+                       {'zip': '\u0666\u0663\u0661\u0662\u0669'}):
             with self.subTest(update=update), self.assertRaises(TestRequestError):
                 validate_request({**REQUEST, **update})
 

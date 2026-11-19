@@ -2686,7 +2686,9 @@
                 "properties": {
                   "line1": {
                     "type": "string",
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "\\S"
                   },
                   "line2": {
                     "type": "string",
@@ -2694,11 +2696,15 @@
                   },
                   "city": {
                     "type": "string",
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "\\S"
                   },
                   "region": {
                     "type": "string",
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "\\S"
                   }
                 },
                 "required": [
@@ -2718,13 +2724,18 @@
             "items": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 120
+              "maxLength": 120,
+              "pattern": "\\S"
             }
           },
           "retailer": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100
+            "maxLength": 100,
+            "pattern": "\\S",
+            "not": {
+              "pattern": "[\\u0000-\\u001f]"
+            }
           },
           "mode": {
             "type": "string",
@@ -2796,7 +2807,31 @@
           }
         ],
         "additionalProperties": false,
-        "description": "Choose exactly one supplier. Synthetic fixture mode is the default. The supported live operation is ingredient/keyword grocery search. Actowiz returns unsupported_operation in live mode; its fixture is a known-product response sample."
+        "description": "Choose exactly one supplier. Synthetic fixture mode is the default. The supported live operation is ingredient/keyword grocery search. Actowiz returns unsupported_operation in live mode; its fixture is a known-product response sample.",
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "provider": {
+                  "enum": [
+                    "xbyte_foodspark",
+                    "actowiz"
+                  ]
+                }
+              },
+              "required": [
+                "provider"
+              ]
+            },
+            "then": {
+              "properties": {
+                "options": {
+                  "maxProperties": 0
+                }
+              }
+            }
+          }
+        ]
       },
       "ProviderTestCompareRequest": {
         "type": "object",
@@ -2820,7 +2855,9 @@
                 "properties": {
                   "line1": {
                     "type": "string",
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "\\S"
                   },
                   "line2": {
                     "type": "string",
@@ -2828,11 +2865,15 @@
                   },
                   "city": {
                     "type": "string",
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "\\S"
                   },
                   "region": {
                     "type": "string",
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "\\S"
                   }
                 },
                 "required": [
@@ -2852,13 +2893,18 @@
             "items": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 120
+              "maxLength": 120,
+              "pattern": "\\S"
             }
           },
           "retailer": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100
+            "maxLength": 100,
+            "pattern": "\\S",
+            "not": {
+              "pattern": "[\\u0000-\\u001f]"
+            }
           },
           "mode": {
             "type": "string",
@@ -2950,7 +2996,78 @@
           }
         ],
         "additionalProperties": false,
-        "description": "Run explicitly selected suppliers independently. Per-provider options are keyed by supplier ID. A 200 response may contain individual supplier errors; inspect each outcome."
+        "description": "Run explicitly selected suppliers independently. Per-provider options are keyed by supplier ID. A 200 response may contain individual supplier errors; inspect each outcome.",
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "options"
+              ],
+              "properties": {
+                "options": {
+                  "required": [
+                    "xbyte_foodspark"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "providers": {
+                  "contains": {
+                    "const": "xbyte_foodspark"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "options"
+              ],
+              "properties": {
+                "options": {
+                  "required": [
+                    "northfork"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "providers": {
+                  "contains": {
+                    "const": "northfork"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "options"
+              ],
+              "properties": {
+                "options": {
+                  "required": [
+                    "actowiz"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "providers": {
+                  "contains": {
+                    "const": "actowiz"
+                  }
+                }
+              }
+            }
+          }
+        ]
       },
       "ProviderTestItem": {
         "type": "object",
@@ -3231,16 +3348,45 @@
           }
         },
         "required": [
+          "platform",
+          "retailer",
+          "query",
+          "provider_product_id",
+          "upc",
+          "name",
+          "brand",
+          "size",
+          "price_decimal",
+          "currency",
+          "image_url",
+          "url",
+          "requested_zip",
+          "observed_zip",
+          "provider_store_id",
+          "captured_at",
+          "retrieved_at",
+          "unit_of_order",
           "id",
           "provider",
-          "name",
           "price",
-          "currency",
+          "price_minor",
+          "price_kind",
+          "price_basis",
+          "unit_price",
+          "availability",
+          "availability_raw",
+          "location_evidence",
+          "quality_flags",
           "raw_field_types",
+          "raw_price",
           "raw_price_unit",
           "source_mode",
           "selectable",
-          "transfer_verified"
+          "cart_transfer_supported",
+          "transfer_verified",
+          "list_display_supported",
+          "provider_quantity",
+          "live"
         ],
         "description": "Canonical observation. Northfork USD integer price uses minor units; X-Byte and Actowiz major-unit prices are not divided by 100. Null values remain unknown. requested_zip and observed branch ZIP are separate. Fixture records are synthetic. This object is never accepted as a shopping quote. Additional quality fields may be supplied."
       },
