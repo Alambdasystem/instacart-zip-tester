@@ -21,6 +21,7 @@ from connector import ConnectorError
 from isolated_runner import search_browser, stop_all
 from foodspark import search_live
 from savings import calculate as calculate_savings, SavingsError
+from provider_tests import ProviderTests, TestRequestError
 
 ROOT = Path(__file__).parent
 LOCK = PriorityLock()
@@ -38,6 +39,7 @@ INGESTOR = None
 JOBS=SearchJobs()
 RATE_LOCK=threading.Lock()
 COMPARISON = Comparison(CATALOG,CACHE,LOCK,lambda *a: search_browser(*a))
+PROVIDER_TESTS = ProviderTests(Path(CATALOG.path).parent/'provider-test-budget.sqlite3')
 
 def validate(data):
     if not isinstance(data, dict): raise ValueError('Expected a JSON object.')
@@ -75,6 +77,9 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError,ConnectionResetError):emit('client_disconnected',status='response_abandoned')
     def do_GET(self):
         route=urlsplit(self.path)
+        if route.path=='/api/v1/provider-tests/status':return self.send(200,PROVIDER_TESTS.status())
+        if route.path=='/provider-lab':
+            self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff');self.end_headers();self.wfile.write((ROOT/'provider-lab.html').read_bytes());return
         if route.path.startswith('/api/v1/search/jobs/'):
             key=route.path.rsplit('/',1)[-1]
             try:return self.send(200,JOBS.get(key,self.headers.get('Authorization','').removeprefix('Bearer ')))
@@ -112,7 +117,7 @@ class Handler(BaseHTTPRequestHandler):
                 with CATALOG.db() as db:db.execute('SELECT 1').fetchone()
                 return self.send(200,{'status':'ready','storage_available':Path(CATALOG.path).exists(),'persistent_mount_configured':bool(os.getenv('RENDER_DISK_MOUNT_PATH'))})
             except Exception:return self.send(503,{'status':'not_ready','message':'Catalog storage unavailable'})
-        if self.path=='/health': return self.send(200,{'status':'ok','version':'0.8.1','freshness_v07':FRESHNESS_V07})
+        if self.path=='/health': return self.send(200,{'status':'ok','version':SPEC['info']['version'],'freshness_v07':FRESHNESS_V07})
         if self.path=='/openapi.json': return self.send(200,SPEC)
         if route.path in ('/docs','/swagger','/android-contract.md','/instasearch-contract.md'):
             filename='android-contract.md' if route.path in ('/android-contract.md','/instasearch-contract.md') else 'swagger.html'
@@ -125,6 +130,11 @@ class Handler(BaseHTTPRequestHandler):
             if not 0<size<=10000: raise ValueError('Request body must be 1–10000 bytes.')
             data=json.loads(self.rfile.read(size))
             if not isinstance(data,dict): raise ValueError('Expected a JSON object.')
+            if self.path in ('/api/v1/provider-tests/search','/api/v1/provider-tests/compare'):
+                try:
+                    code,outcome=PROVIDER_TESTS.run(data,self.headers.get('Authorization',''),comparison=self.path.endswith('/compare'))
+                    return self.send(code,outcome)
+                except TestRequestError as e:return self.send(e.http_status,{'error':e.code,'message':e.message})
             if self.path.startswith('/api/v1/search/jobs/') and self.path.endswith('/cancel'):
                 key=self.path.split('/')[-2]
                 if data!={}:raise ValueError('Cancellation body must be empty.')

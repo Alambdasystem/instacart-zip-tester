@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "InstaSearch API Contract",
-    "version": "0.8.1",
-    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. Local baskets and provider links do not transfer items or place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels. Optional v0.7 freshness scheduling preserves five-minute quote expiry. Catalog descriptions remain browsable with expired prices explicitly labeled; background refresh never renews an existing search_id. Cache-only never schedules refresh."
+    "version": "0.9.0",
+    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. Local baskets and provider links do not transfer items or place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels. Optional v0.7 freshness scheduling preserves five-minute quote expiry. Catalog descriptions remain browsable with expired prices explicitly labeled; background refresh never renews an existing search_id. Cache-only never schedules refresh. Provider tests add isolated, explicitly selected X-Byte/FoodSpark and Northfork reads plus synthetic Actowiz schema fixtures. They never fall back or issue shopping quotes. Live tests require a dedicated token, enable flag and separate persistent read allowance."
   },
   "servers": [
     {
@@ -27,6 +27,10 @@
     },
     {
       "name": "Service"
+    },
+    {
+      "name": "Provider tests",
+      "description": "Isolated supplier observations; no quote, cart or catalog writes."
     }
   ],
   "paths": {
@@ -918,6 +922,507 @@
           },
           "422": {
             "description": "Invalid references or quantity."
+          }
+        }
+      }
+    },
+    "/api/v1/provider-tests/status": {
+      "get": {
+        "operationId": "providerTestStatus",
+        "tags": [
+          "Provider tests"
+        ],
+        "summary": "Show test capability and separate read allowances without secrets",
+        "responses": {
+          "200": {
+            "description": "Current supplier test capabilities",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderTestStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/provider-tests/search": {
+      "post": {
+        "operationId": "providerTestSearch",
+        "tags": [
+          "Provider tests"
+        ],
+        "summary": "Run one supplier without fallback",
+        "description": "Fixture mode uses clearly labeled synthetic samples and makes no network calls. Live mode requires server configuration and ProviderTestToken. Results never write the normal catalog/cache or shopping quote store. No fallback is permitted.",
+        "security": [
+          {},
+          {
+            "ProviderTestToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderTestRequest"
+              },
+              "example": {
+                "provider": "northfork",
+                "zip": "63129",
+                "queries": [
+                  "1 gallon whole milk",
+                  "12 eggs"
+                ],
+                "retailer": "schnucks",
+                "mode": "fixture",
+                "fallback_policy": "none",
+                "options": {
+                  "marketplace": "instacart",
+                  "in_stock": false
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Completed independent test; inspect status and per-provider errors",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderTestOutcome"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Dedicated live-test token required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderTestOutcome"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or unsupported supplier operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderTestOutcome"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Read allowance exhausted or test capacity busy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderTestOutcome"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Selected supplier returned invalid data or failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderTestOutcome"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Live tests disabled, key missing or budget unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderTestOutcome"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Selected supplier timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderTestOutcome"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Selected store was not returned; inspect safe candidates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderTestOutcome"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Store selection is ambiguous; select a returned store_id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderTestOutcome"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/provider-tests/compare": {
+      "post": {
+        "operationId": "providerTestCompare",
+        "tags": [
+          "Provider tests"
+        ],
+        "summary": "Compare independent supplier outcomes",
+        "description": "Fixture mode uses clearly labeled synthetic samples and makes no network calls. Live mode requires server configuration and ProviderTestToken. Results never write the normal catalog/cache or shopping quote store. No fallback is permitted.",
+        "security": [
+          {},
+          {
+            "ProviderTestToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderTestCompareRequest"
+              },
+              "example": {
+                "zip": "63129",
+                "queries": [
+                  "1 gallon whole milk",
+                  "12 eggs"
+                ],
+                "retailer": "schnucks",
+                "mode": "fixture",
+                "fallback_policy": "none",
+                "providers": [
+                  "xbyte_foodspark",
+                  "northfork",
+                  "actowiz"
+                ],
+                "options": {
+                  "northfork": {
+                    "marketplace": "instacart",
+                    "in_stock": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Completed independent test; inspect status and per-provider errors",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderTestComparison"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Dedicated live-test token required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderTestOutcome"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or unsupported supplier operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderTestOutcome"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Read allowance exhausted or test capacity busy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderTestOutcome"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Selected supplier returned invalid data or failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderTestOutcome"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Live tests disabled, key missing or budget unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderTestOutcome"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Selected supplier timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderTestOutcome"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
           }
         }
       }
@@ -2158,6 +2663,881 @@
             }
           }
         }
+      },
+      "ProviderTestRequest": {
+        "type": "object",
+        "properties": {
+          "zip": {
+            "type": "string",
+            "pattern": "^[0-9]{5}$"
+          },
+          "location": {
+            "type": "object",
+            "properties": {
+              "postal_code": {
+                "type": "string",
+                "pattern": "^[0-9]{5}$"
+              },
+              "country_code": {
+                "const": "US"
+              },
+              "address": {
+                "type": "object",
+                "properties": {
+                  "line1": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "line2": {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "city": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "region": {
+                    "type": "string",
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "line1",
+                  "city",
+                  "region"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "queries": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          },
+          "retailer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "fixture",
+              "live"
+            ],
+            "default": "fixture"
+          },
+          "fallback_policy": {
+            "const": "none",
+            "default": "none"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "xbyte_foodspark",
+              "northfork",
+              "actowiz"
+            ]
+          },
+          "options": {
+            "type": "object",
+            "properties": {
+              "marketplace": {
+                "type": "string",
+                "enum": [
+                  "instacart",
+                  "target",
+                  "walmart"
+                ],
+                "default": "instacart"
+              },
+              "store_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,100}$"
+              },
+              "in_stock": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Northfork only. Other suppliers accept an empty options object. Stock filtering is optional."
+          }
+        },
+        "required": [
+          "queries",
+          "retailer",
+          "provider"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "zip"
+            ]
+          },
+          {
+            "properties": {
+              "location": {
+                "required": [
+                  "postal_code"
+                ]
+              }
+            },
+            "required": [
+              "location"
+            ]
+          }
+        ],
+        "additionalProperties": false,
+        "description": "Choose exactly one supplier. Synthetic fixture mode is the default. The supported live operation is ingredient/keyword grocery search. Actowiz returns unsupported_operation in live mode; its fixture is a known-product response sample."
+      },
+      "ProviderTestCompareRequest": {
+        "type": "object",
+        "properties": {
+          "zip": {
+            "type": "string",
+            "pattern": "^[0-9]{5}$"
+          },
+          "location": {
+            "type": "object",
+            "properties": {
+              "postal_code": {
+                "type": "string",
+                "pattern": "^[0-9]{5}$"
+              },
+              "country_code": {
+                "const": "US"
+              },
+              "address": {
+                "type": "object",
+                "properties": {
+                  "line1": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "line2": {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "city": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "region": {
+                    "type": "string",
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "line1",
+                  "city",
+                  "region"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "queries": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          },
+          "retailer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "fixture",
+              "live"
+            ],
+            "default": "fixture"
+          },
+          "fallback_policy": {
+            "const": "none",
+            "default": "none"
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "xbyte_foodspark",
+                "northfork",
+                "actowiz"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 3,
+            "uniqueItems": true
+          },
+          "options": {
+            "type": "object",
+            "properties": {
+              "xbyte_foodspark": {
+                "type": "object",
+                "additionalProperties": false
+              },
+              "northfork": {
+                "type": "object",
+                "properties": {
+                  "marketplace": {
+                    "type": "string",
+                    "enum": [
+                      "instacart",
+                      "target",
+                      "walmart"
+                    ],
+                    "default": "instacart"
+                  },
+                  "store_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{1,100}$"
+                  },
+                  "in_stock": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Northfork only. Other suppliers accept an empty options object. Stock filtering is optional."
+              },
+              "actowiz": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "queries",
+          "retailer",
+          "providers"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "zip"
+            ]
+          },
+          {
+            "properties": {
+              "location": {
+                "required": [
+                  "postal_code"
+                ]
+              }
+            },
+            "required": [
+              "location"
+            ]
+          }
+        ],
+        "additionalProperties": false,
+        "description": "Run explicitly selected suppliers independently. Per-provider options are keyed by supplier ID. A 200 response may contain individual supplier errors; inspect each outcome."
+      },
+      "ProviderTestItem": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retailer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_product_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "upc": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "brand": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "price_decimal": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_zip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_zip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_store_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "captured_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retrieved_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit_of_order": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^test:"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "xbyte_foodspark",
+              "northfork",
+              "actowiz"
+            ]
+          },
+          "price": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "price_minor": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "price_kind": {
+            "type": "string",
+            "enum": [
+              "exact",
+              "estimated",
+              "starting_at",
+              "unknown"
+            ]
+          },
+          "price_basis": {
+            "type": "string",
+            "enum": [
+              "known",
+              "unspecified"
+            ]
+          },
+          "unit_price": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "amount": {
+                "type": "number"
+              },
+              "amount_decimal": {
+                "type": "string"
+              },
+              "currency": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "quantity": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "unit": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "amount",
+              "amount_decimal",
+              "currency",
+              "quantity",
+              "unit"
+            ]
+          },
+          "availability": {
+            "type": "string",
+            "enum": [
+              "in_stock",
+              "out_of_stock",
+              "unknown"
+            ]
+          },
+          "availability_raw": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          },
+          "location_evidence": {
+            "type": "string",
+            "enum": [
+              "request_acknowledged",
+              "unknown",
+              "mismatch"
+            ]
+          },
+          "quality_flags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "raw_field_types": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "string",
+                "number",
+                "boolean",
+                "null",
+                "object",
+                "array"
+              ]
+            }
+          },
+          "raw_price": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          },
+          "raw_price_unit": {
+            "type": "string",
+            "enum": [
+              "minor_currency_units",
+              "major_currency_units",
+              "formatted_major_currency",
+              "unknown"
+            ]
+          },
+          "source_mode": {
+            "type": "string",
+            "enum": [
+              "live",
+              "fixture",
+              "historical"
+            ]
+          },
+          "selectable": {
+            "const": false
+          },
+          "cart_transfer_supported": {
+            "type": "boolean"
+          },
+          "transfer_verified": {
+            "const": false
+          },
+          "list_display_supported": {
+            "type": "boolean"
+          },
+          "provider_quantity": {
+            "type": [
+              "number",
+              "string",
+              "null"
+            ]
+          },
+          "live": {
+            "type": "boolean",
+            "description": "False for synthetic or historical observations; mode=live indicates retrieval, not freshness or checkout verification."
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "name",
+          "price",
+          "currency",
+          "raw_field_types",
+          "raw_price_unit",
+          "source_mode",
+          "selectable",
+          "transfer_verified"
+        ],
+        "description": "Canonical observation. Northfork USD integer price uses minor units; X-Byte and Actowiz major-unit prices are not divided by 100. Null values remain unknown. requested_zip and observed branch ZIP are separate. Fixture records are synthetic. This object is never accepted as a shopping quote. Additional quality fields may be supplied."
+      },
+      "ProviderTestMetrics": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "named": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "priced": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sized": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "provider_ids": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "images": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "stock_known": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "location_acknowledged": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "source_timestamps": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "items",
+          "named",
+          "priced",
+          "sized",
+          "provider_ids",
+          "images",
+          "stock_known",
+          "location_acknowledged",
+          "source_timestamps"
+        ]
+      },
+      "ProviderTestOutcome": {
+        "type": "object",
+        "properties": {
+          "test_id": {
+            "type": "string"
+          },
+          "requested_provider": {
+            "type": "string",
+            "enum": [
+              "xbyte_foodspark",
+              "northfork",
+              "actowiz"
+            ]
+          },
+          "actual_provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "xbyte_foodspark",
+              "northfork",
+              "actowiz",
+              null
+            ]
+          },
+          "mode": {
+            "enum": [
+              "fixture",
+              "live"
+            ]
+          },
+          "operation": {
+            "enum": [
+              "schema_fixture",
+              "grocery_search"
+            ]
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "empty",
+              "error"
+            ]
+          },
+          "fallback_used": {
+            "const": false
+          },
+          "cache_used": {
+            "const": false
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "upstream_requests": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderTestItem"
+            }
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/ProviderTestMetrics"
+          }
+        },
+        "required": [
+          "test_id",
+          "requested_provider",
+          "actual_provider",
+          "mode",
+          "operation",
+          "status",
+          "fallback_used",
+          "cache_used",
+          "duration_ms",
+          "upstream_requests",
+          "items",
+          "error",
+          "warnings",
+          "metrics"
+        ]
+      },
+      "ProviderTestComparison": {
+        "type": "object",
+        "properties": {
+          "comparison_id": {
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "fixture",
+              "live"
+            ]
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "partial",
+              "error"
+            ]
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderTestOutcome"
+            },
+            "minItems": 1,
+            "maxItems": 3
+          },
+          "fallback_used": {
+            "const": false
+          },
+          "cache_used": {
+            "const": false
+          }
+        },
+        "required": [
+          "comparison_id",
+          "mode",
+          "status",
+          "providers",
+          "fallback_used",
+          "cache_used"
+        ]
+      },
+      "ProviderTestStatus": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "live_tests_enabled": {
+            "type": "boolean"
+          },
+          "token_configured": {
+            "type": "boolean"
+          },
+          "cache_policy": {
+            "const": "disabled"
+          },
+          "fallback_policy": {
+            "const": "none"
+          },
+          "test_api_version": {
+            "const": "1.0"
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "enum": [
+                    "xbyte_foodspark",
+                    "northfork",
+                    "actowiz"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "live_search_supported": {
+                  "type": "boolean"
+                },
+                "budget_limit": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "budget_used": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "status": {
+                  "type": "string"
+                },
+                "requirements": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "configured",
+                "live_search_supported",
+                "budget_limit",
+                "budget_used",
+                "status",
+                "requirements"
+              ]
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "live_tests_enabled",
+          "token_configured",
+          "cache_policy",
+          "fallback_policy",
+          "test_api_version",
+          "providers"
+        ]
       }
     },
     "securitySchemes": {
@@ -2170,6 +3550,11 @@
         "type": "http",
         "scheme": "bearer",
         "description": "Short-lived job capability returned only by job creation."
+      },
+      "ProviderTestToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Dedicated test token required only for mode=live. Never bundle it into a public/mobile application; use an authenticated development relay or enter it for an operator session. Fixture mode requires no token."
       }
     }
   }
