@@ -33,7 +33,7 @@ class FreshnessTests(unittest.TestCase):
         self.assertEqual(meta['expires_in'],239);self.assertEqual(meta['source'],'persistent_cache')
         self.now[0]=1540;self.assertIsNone(fresh.get(fresh.key('63129',['eggs'],'aldi',True)))
     def test_flag_isolated_from_other_providers_and_legacy_keys(self):
-        other=SearchCache(clock=self.clock,independent_expiry=True).attach(self.catalog,'mealme_satsuma')
+        other=SearchCache(clock=self.clock,independent_expiry=True).attach(self.catalog,'test_catalog_provider')
         key=other.key('63129',['milk'],'aldi',True);other.put(key,self.payload());self.now[0]=1240
         self.assertEqual(other.put(other.key('63129',['eggs'],'aldi',True),self.payload('eggs'))['expires_in'],60)
         legacy=SearchCache(clock=self.clock)

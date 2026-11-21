@@ -148,7 +148,7 @@ class AsyncApiTests(unittest.TestCase):
 
     def test_async_provider_selector_is_rejected_without_rerouting(self):
         with patch.dict(os.environ,{'CONNECTOR_ENABLED':'true'}),patch.object(self.api,'search_browser') as fetch:
-            code,value=self.request('/api/v1/search/jobs',{'zip':'63129','query':'milk','providers':['vercel_square']})
+            code,value=self.request('/api/v1/search/jobs',{'zip':'63129','query':'milk','providers':['unconfigured_test_provider']})
         self.assertEqual(code,422);self.assertEqual(value['error'],'invalid_provider');fetch.assert_not_called()
 
 class ResolverFreshnessTests(unittest.TestCase):

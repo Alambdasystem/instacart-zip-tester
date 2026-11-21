@@ -50,11 +50,15 @@ class ContractTests(unittest.TestCase):
             with patch.object(api,'COMPARISON',comparison):
                 code,data=self.post('/api/v1/compare',{'zip':'63110','queries':['milk'],'mode':'catalog'})
                 self.assertEqual(code,200);self.check(data,{'$ref':'#/components/schemas/ComparisonResponse'})
-                self.assertEqual([p['status'] for p in data['providers']],['not_cached','not_cached'])
-                code,all_sources=self.post('/api/v1/compare',{'zip':'63110','queries':['milk'],'mode':'catalog','providers':['instacart','mealme_satsuma','vercel_kroger','vercel_square']})
-                self.assertEqual(code,200);self.check(all_sources,{'$ref':'#/components/schemas/ComparisonResponse'})
-                self.assertEqual(len(all_sources['providers']),4)
-                self.assertTrue(all(p['status']=='not_cached' for p in all_sources['providers']))
+                self.assertEqual([p['status'] for p in data['providers']],['not_cached'])
+                self.assertEqual([p['provider'] for p in data['providers']],['instacart'])
+                code,active=self.post('/api/v1/compare',{'zip':'63110','queries':['milk'],'mode':'catalog','providers':['instacart']})
+                self.assertEqual(code,200);self.check(active,{'$ref':'#/components/schemas/ComparisonResponse'})
+                self.assertEqual(len(active['providers']),1)
+                for retired in ('mealme_satsuma','vercel_kroger','vercel_square'):
+                    code,error=self.post('/api/v1/compare',{'zip':'63110','queries':['milk'],'mode':'catalog','providers':[retired]})
+                    self.assertEqual(code,410);self.assertEqual(error['error'],'provider_removed')
+                    self.check(error,{'$ref':'#/components/schemas/Error'})
                 self.assertEqual(self.post('/api/v1/compare',{'zip':'63110','queries':['milk'],'providers':['other']})[0],422)
                 self.assertEqual(self.post('/api/v1/compare',{'zip':'63110','queries':['milk'],'mode':'write'})[0],422)
 

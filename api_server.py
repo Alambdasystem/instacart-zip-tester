@@ -22,6 +22,7 @@ from isolated_runner import search_browser, stop_all
 from foodspark import search_live
 from savings import calculate as calculate_savings, SavingsError
 from provider_tests import ProviderTests, TestRequestError
+from provider_registry import CATALOG_PROVIDERS, COMPARISON_PROVIDERS, RETIRED_PROVIDERS, source_provider
 
 ROOT = Path(__file__).parent
 LOCK = PriorityLock()
@@ -96,11 +97,15 @@ class Handler(BaseHTTPRequestHandler):
             if z is not None and not re.fullmatch(r'\d{5}',z):return self.send(422,{'error':'invalid_request','message':'Invalid ZIP'})
             set_location({'postal_code':z,'country_code':'US'})
             provider=params.get('provider',['instacart'])[0]
-            if provider not in ('instacart','mealme_satsuma','vercel_kroger','vercel_square','all'):return self.send(422,{'error':'invalid_provider'})
-            items=CATALOG.search(q,z,retailer,provider=None if provider=='all' else provider,limit=5000 if route.path.endswith('/export') else 100)
+            if provider in RETIRED_PROVIDERS:return self.send(410,{'error':'provider_removed','message':'This provider has been removed. Use an active provider from /api/v1/providers/status.'})
+            if provider not in (*CATALOG_PROVIDERS,'all'):return self.send(422,{'error':'invalid_provider'})
+            # Retired snapshots remain stored for audit, but are never exposed by all/export.
+            items=CATALOG.search(q,z,retailer,provider='instacart' if provider=='all' else provider,limit=5000 if route.path.endswith('/export') else 100)
             withheld=sum(not i.get('location_verified') or i.get('observed_zip')!=z for i in items) if z and not allow else 0
             if z and not allow:items=[i for i in items if i.get('location_verified') and i.get('observed_zip')==z]
-            for i in items:i['selectable']=i.get('provider','instacart')=='instacart' and isinstance(i.get('price'),(int,float)) and i['price_fresh'] and i.get('context_compatible',False) and i.get('location_verified',False)
+            for i in items:
+                i['source_provider']=source_provider(i)
+                i['selectable']=i.get('provider','instacart')=='instacart' and isinstance(i.get('price'),(int,float)) and i['price_fresh'] and i.get('context_compatible',False) and i.get('location_verified',False)
             fresh=[i for i in items if i['selectable']]
             observed={i.get('observed_zip') for i in items}
             location={'requested_zip':z,'observed_zip':next(iter(observed)) if len(observed)==1 else None,'verified':bool(fresh) and all(i.get('location_verified') for i in fresh),'verification_scope':'zip_only','delivery_serviceability_verified':False,'store_branch_verified':False}
@@ -192,8 +197,10 @@ class Handler(BaseHTTPRequestHandler):
                 except SavingsError as e:return self.send(409,{'error':e.code,'message':str(e)})
             if self.path=='/api/v1/compare':
                 z,qs,store,flag=validate(data)
-                mode=data.get('mode','catalog');providers=data.get('providers',['instacart','mealme_satsuma'])
-                if mode not in ('catalog','live','auto','cache_only','refresh') or not isinstance(providers,list) or not providers or len(providers)>4 or any(p not in ('instacart','mealme_satsuma','vercel_kroger','vercel_square') for p in providers):raise ValueError('Invalid comparison options.')
+                mode=data.get('mode','catalog');providers=data.get('providers',list(COMPARISON_PROVIDERS))
+                if mode not in ('catalog','live','auto','cache_only','refresh') or not isinstance(providers,list) or not providers or len(providers)>4 or any(not isinstance(p,str) for p in providers):raise ValueError('Invalid comparison options.')
+                if any(p in RETIRED_PROVIDERS for p in providers):return self.send(410,{'error':'provider_removed','message':'MealMe and its Satsuma/Kroger/Square adapters have been removed. No provider request was sent. Use /api/v1/provider-tests/compare for Xbyte, Northfork, and Actowiz testing.'})
+                if any(p not in COMPARISON_PROVIDERS for p in providers):raise ValueError('Invalid comparison options.')
                 if mode not in ('catalog','cache_only'):
                     client='compare:'+hashlib.sha256(self.client_address[0].encode()).hexdigest()
                     if len(RATE)>1000:RATE.clear()
@@ -208,7 +215,7 @@ class Handler(BaseHTTPRequestHandler):
                 group=(retailer,z)
                 if now-INVALIDATIONS.get(group,0)<60:return self.send(429,{'error':'rate_limited','message':'Store invalidation is limited to once per minute.'})
                 INVALIDATIONS[group]=now
-                removed=CACHE.invalidate(retailer,z)+COMPARISON.scache.invalidate(retailer,z)+sum(c.invalidate(retailer,z) for c in COMPARISON.vcaches.values())
+                removed=CACHE.invalidate(retailer,z)
                 CATALOG.invalidate(retailer,z)
                 expired=0
                 for sid,result in list(RESULTS.items()):

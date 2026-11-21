@@ -1,7 +1,35 @@
-"""Declared adapter capabilities, separate from actual provider availability."""
-CAPABILITIES={
- 'instacart':{'kind':'grocery_discovery','location_inputs':['zip','address'],'address_acknowledgment_required':True,'delivery_verified':False,'cart':'local_app_only'},
- 'mealme_satsuma':{'kind':'food_catalog','location_inputs':['zip','coordinates'],'address_supported':False,'price_units_verified':False,'cart':'unsupported'},
- 'vercel_kroger':{'kind':'grocery','location_inputs':['zip'],'documented_routes_verified':True,'live_contract_verified':False,'price_units_verified':False,'cart':'unsupported'},
- 'vercel_square':{'kind':'restaurant','location_inputs':['zip'],'documented_routes_verified':True,'live_contract_verified':False,'price_units_verified':False,'cart':'unsupported'}
+"""Active providers and explicit retirement of unsupported upstreams."""
+import os
+
+RETIRED_PROVIDERS = frozenset({
+    'mealme', 'satsuma', 'mealme_satsuma', 'vercel_kroger',
+    'vercel_square', 'vercel_proxy',
+})
+COMPARISON_PROVIDERS = ('instacart',)
+CATALOG_PROVIDERS = ('instacart',)
+CAPABILITIES = {
+    'instacart': {'kind': 'grocery_discovery', 'location_inputs': ['zip', 'address'],
+                 'address_acknowledgment_required': True, 'delivery_verified': False,
+                 'cart': 'local_app_only'},
+    'xbyte_foodspark': {'kind': 'grocery_discovery', 'location_inputs': ['address'],
+                       'retailer_required': True, 'address_acknowledgment_required': True,
+                       'delivery_verified': False, 'cart': 'local_app_only'},
 }
+
+
+def source_provider(item):
+    """Keep the existing catalog namespace while disclosing the actual fetcher."""
+    if item.get('source_provider') in ('xbyte_foodspark', 'instacart_browser'):
+        return item['source_provider']
+    return 'xbyte_foodspark' if item.get('source') == 'foodspark' else 'instacart_browser'
+
+
+def routing_status():
+    return {
+        'primary_provider': 'xbyte_foodspark', 'selection': 'conditional',
+        'configured': bool(os.getenv('FOODSPARK_API_KEY', '').strip()),
+        'requires': ['retailer', 'location.address'],
+        'otherwise': 'instacart_browser', 'on_primary_error': 'error_no_fallback',
+        'comparison': 'instacart_browser', 'background_ingestion': 'instacart_browser',
+        'provider_test_route': '/api/v1/provider-tests/search',
+    }

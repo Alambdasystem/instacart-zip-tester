@@ -5,17 +5,18 @@ from connector import ConnectorError
 from telemetry import emit
 from provider_session import request_context_id
 from location_context import current_location
+from provider_registry import source_provider
 
 def merge_parts(parts,hit_queries,fetched_queries):
     payloads=[p for p,m in parts];metas=[m for p,m in parts]
-    products={i['id']:i for p in payloads for i in p['items']}
+    products={i['id']:{**i,'source_provider':source_provider(i)} for p in payloads for i in p['items']}
     observed={p['location'].get('observed_zip') for p in payloads}
     location=dict(payloads[0]['location']);location['verified']=all(p['location'].get('verified',False) for p in payloads)
     location['observed_zip']=next(iter(observed)) if len(observed)==1 else None
     retailers={r['id']:dict(r) for p in payloads for r in p.get('retailers',[])}
     for r in retailers.values():r['products_returned']=sum(i.get('retailer')==r['id'] for i in products.values())
     meta={'hit':not fetched_queries,'partial_hit':bool(hit_queries and fetched_queries),'hit_queries':hit_queries,'fetched_queries':fetched_queries,'age_seconds':max(m['age_seconds'] for m in metas),'expires_in':min(m['expires_in'] for m in metas),'ttl_seconds':300,'sources':sorted({m.get('source','memory_cache' if m.get('hit') else 'live') for m in metas})}
-    return {'items':list(products.values()),'location':location,'warnings':list(dict.fromkeys(w for p in payloads for w in p.get('warnings',[]))),'retrieved_at':min(p.get('retrieved_at','') for p in payloads),'retailers':list(retailers.values()),'diagnostics':[d for p in payloads for d in p.get('diagnostics',[])], 'coverage_complete':False,'partial_errors':[e for p in payloads for e in p.get('partial_errors',[])]},meta
+    return {'items':list(products.values()),'source_providers':sorted({i['source_provider'] for i in products.values()}),'location':location,'warnings':list(dict.fromkeys(w for p in payloads for w in p.get('warnings',[]))),'retrieved_at':min(p.get('retrieved_at','') for p in payloads),'retailers':list(retailers.values()),'diagnostics':[d for p in payloads for d in p.get('diagnostics',[])], 'coverage_complete':False,'partial_errors':[e for p in payloads for e in p.get('partial_errors',[])]},meta
 
 class SearchService:
     def __init__(self,catalog,cache,lock,fetch,provider='instacart'):
