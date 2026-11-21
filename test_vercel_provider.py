@@ -1,90 +1,152 @@
-"""Synthetic contract tests; never make paid provider requests."""
+"""Retired supplier routes stay disconnected, including with old keys and stored data."""
+from copy import deepcopy
+import http.client
+import json
 import os
 import tempfile
 import threading
 import unittest
 from unittest.mock import Mock, patch
-from ingestion import Catalog
-from search_cache import SearchCache
-from provider_comparison import Comparison
-from satsuma_provider import ProviderError
-import vercel_provider as v
 
-class VercelTests(unittest.TestCase):
+import api_server as api
+from ingestion import Catalog
+from location_context import set_location
+from provider_comparison import Comparison
+from search_cache import SearchCache
+
+RETIRED = ('mealme_satsuma', 'vercel_kroger', 'vercel_square')
+LEGACY_ENV = {
+    'CONNECTOR_ENABLED': 'true',
+    'SATSUMA_API_KEY': 'synthetic-retired-key',
+    'SATSUMA_READ_BUDGET': '100',
+    'VERCEL_MEALME_API_KEY': 'synthetic-retired-proxy-key',
+    'VERCEL_MEALME_READ_BUDGET': '100',
+}
+
+
+class RetiredProviderApiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = api.ThreadingHTTPServer(('127.0.0.1', 0), api.Handler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory()
-        self.catalog=Catalog(self.temp.name+'/db')
-        self.c=Comparison(self.catalog,SearchCache(),threading.Lock(),Mock())
-    def tearDown(self):self.temp.cleanup()
-    def fixture(self,path,params):
-        provider=params['providerId']
-        if path.endswith('/stores/search'):
-            return {'stores':[{'providerId':provider,'providerLocationId':str(i),'name':'Store '+str(i)} for i in range(5)]}
-        return {'items':[{'providerId':provider,'providerItemId':'milk','providerLocationId':params['locationId'],'title':'Milk','priceCents':325,'currency':'USD','imageUrl':'https://example.com/milk.jpg','raw':{'unitToken':'must-not-leak'}}]}
-    def test_bounded_search_and_store_identity(self):
-        req=Mock(side_effect=self.fixture)
-        result=v.search('63110',['milk'],'vercel_kroger',req)
-        self.assertEqual(req.call_count,3)
-        self.assertEqual(len(result['retailers']),2)
-        self.assertEqual(len({p['id'] for p in result['items']}),2)
-        self.assertEqual(req.call_args_list[0].args[1]['zipCode'],'63110')
-        self.assertFalse(result['location']['verified'])
-        self.assertNotIn('must-not-leak',str(result))
-        self.assertTrue(all(p['price'] is None and not p['selectable'] for p in result['items']))
-    def test_credentials_are_host_scoped_and_no_writes(self):
-        with patch.dict(os.environ,{'VERCEL_MEALME_API_KEY':'proxy-test','SATSUMA_API_KEY':'other-test'}),patch.object(v,'get_json',return_value={'stores':[]}) as get:
-            v.request('/api/stores/search',{'providerId':'kroger','zipCode':'63129'})
-            url,headers=get.call_args.args
-            self.assertTrue(url.startswith(v.BASE_URL+'/api/stores/search?'))
-            self.assertEqual(headers['Authorization'],'Bearer proxy-test')
-            with self.assertRaises(ProviderError):v.request('/api/carts',{'providerId':'kroger'})
-            self.assertEqual(get.call_count,1)
-    def test_proxy_cache_db_and_satsuma_separate(self):
-        with patch.object(self.c,'vercel_request',side_effect=self.fixture) as req:
-            first=self.c.compare('63129',['milk'],'',True,'live',list(v.PROVIDERS))
-            second=self.c.compare('63129',['milk'],'',True,'live',list(v.PROVIDERS))
-        self.assertEqual([x['status'] for x in first['providers']],['ok','ok'])
-        self.assertEqual(req.call_count,6)
-        self.assertTrue(all(x['cache_hit'] for x in second['providers']))
-        self.assertEqual(len(self.catalog.search(provider='vercel_kroger')),2)
-        self.assertEqual(len(self.catalog.search(provider='vercel_square')),2)
-        self.assertEqual(self.catalog.search(provider='mealme_satsuma'),[])
-    def test_missing_key_and_zero_budget_do_not_call_provider(self):
-        with patch.dict(os.environ,{},clear=True),patch.object(v,'request') as req:
-            with self.assertRaises(ProviderError) as cm:self.c.vercel_request('/api/stores/search',{'providerId':'kroger'})
-            self.assertEqual(cm.exception.code,'not_configured')
-            with patch.dict(os.environ,{'VERCEL_MEALME_API_KEY':'test'}):
-                with self.assertRaises(ProviderError) as cm:self.c.vercel_request('/api/stores/search',{'providerId':'kroger'})
-                self.assertEqual(cm.exception.code,'budget_exhausted')
-            req.assert_not_called()
-    def test_shared_atomic_budget_and_cooldown(self):
-        with patch.dict(os.environ,{'VERCEL_MEALME_API_KEY':'test','VERCEL_MEALME_READ_BUDGET':'1'}),patch.object(v,'request',side_effect=ProviderError('service_unavailable','Unavailable',503)) as req:
-            for provider in ('kroger','square'):
-                with self.assertRaises(ProviderError):self.c.vercel_request('/api/stores/search',{'providerId':provider})
-            self.assertEqual(req.call_count,1)
-            with self.catalog.db() as db:db.execute('DELETE FROM provider_state')
-            with self.assertRaises(ProviderError) as cm:self.c.vercel_request('/api/stores/search',{'providerId':'square'})
-            self.assertEqual(cm.exception.code,'budget_exhausted')
-            self.assertEqual(self.c.status()['read_attempts_in_database'],0)
-    def test_store_discovery_survives_catalog_failure_without_success_cache(self):
-        def fail(path,params):
-            if path.endswith('/catalog/search'):raise ProviderError('service_unavailable','Unavailable',503)
-            return self.fixture(path,params)
-        with patch.object(self.c,'vercel_request',side_effect=fail):
-            result=self.c.one('vercel_kroger','63129',['milk'],'',True,'live')
-        self.assertEqual(result['status'],'error')
-        self.assertEqual(len(result['retailers']),2)
-        self.assertEqual(result['error']['http_status'],503)
-        self.assertFalse(self.c.vcaches['vercel_kroger'].entries)
-        self.assertEqual(self.catalog.search(),[])
-    def test_invalid_payload_is_not_empty_success(self):
-        req=Mock(return_value={'html':'login'})
-        with self.assertRaises(ProviderError):v.search('63129',['milk'],'vercel_square',req)
-        self.assertEqual(req.call_count,1)
-        with self.assertRaises(ProviderError):v.normalize({'items':[{'id':'unknown'}]},'vercel_kroger',{'id':'1','name':'Store'},'milk','63129')
-    def test_identity_mismatch_rejected(self):
-        with self.assertRaises(ProviderError):v.normalize({'items':[{'providerItemId':'1','title':'Milk','providerLocationId':'other'}]},'vercel_kroger',{'id':'1','name':'Store'},'milk','63129')
-    def test_billing_failure_classified(self):
-        with patch.dict(os.environ,{'VERCEL_MEALME_API_KEY':'test'}),patch.object(v,'get_json',side_effect=ProviderError('http_error','402',402)):
-            with self.assertRaises(ProviderError) as cm:v.request('/api/stores/search',{'providerId':'kroger'})
-            self.assertEqual(cm.exception.code,'billing_required')
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.addCleanup(set_location, None)
+        self.catalog = Catalog(self.temp.name + '/db.sqlite')
+        self.browser = Mock(side_effect=AssertionError('Retired-provider request reached browser'))
+        self.comparison = Comparison(self.catalog, SearchCache(), threading.Lock(), self.browser)
+        for patcher in (patch.object(api, 'CATALOG', self.catalog),
+                        patch.object(api, 'COMPARISON', self.comparison),
+                        patch.object(api, 'search_browser', self.browser),
+                        patch.dict(os.environ, LEGACY_ENV)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        # HTTP clients below use http.client for loopback requests; this patch
+        # catches every urllib supplier read without blocking the local test server.
+        upstream = patch('urllib.request.OpenerDirector.open',
+                         side_effect=AssertionError('Unexpected supplier request'))
+        self.upstream = upstream.start()
+        self.addCleanup(upstream.stop)
+        api.RATE.clear()
+        api.RESULTS.clear()
+        self.addCleanup(api.RESULTS.clear)
+
+    def request(self, path, body=None):
+        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
+        try:
+            connection.request('POST' if body is not None else 'GET', path,
+                               body=json.dumps(body) if body is not None else None,
+                               headers={'Content-Type': 'application/json'})
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            connection.close()
+
+    def seed(self, provider):
+        payload = {
+            'provider': provider,
+            'items': [{'id': provider + '-milk', 'provider': provider, 'name': 'Milk',
+                       'price': 3.99, 'retailer': 'aldi', 'query': 'milk',
+                       'provider_location_id': provider + '-store'}],
+            'location': {'requested_zip': '63129', 'observed_zip': '63129',
+                         'verified': True, 'context_id': 'zip:63129'},
+        }
+        self.catalog.ingest('63129', 'milk', payload, 300)
+        cache = SearchCache().attach(self.catalog, provider)
+        cache.put(cache.key('63129', ['milk'], 'aldi', True), deepcopy(payload))
+
+    def test_removed_comparison_routes_return_gone_without_supplier_reads(self):
+        for provider in RETIRED:
+            for providers in ([provider], ['instacart', provider]):
+                with self.subTest(providers=providers):
+                    code, body = self.request('/api/v1/compare', {
+                        'zip': '63129', 'queries': ['milk'], 'mode': 'live',
+                        'providers': providers,
+                    })
+                    self.assertEqual(code, 410)
+                    self.assertEqual(body['error'], 'provider_removed')
+        self.upstream.assert_not_called()
+        self.browser.assert_not_called()
+
+    def test_removed_catalog_and_export_filters_return_gone(self):
+        for provider in RETIRED:
+            self.seed(provider)
+            for route in ('/api/v1/catalog', '/api/v1/catalog/export'):
+                with self.subTest(provider=provider, route=route):
+                    code, body = self.request(route + '?provider=' + provider + '&zip=63129')
+                    self.assertEqual(code, 410)
+                    self.assertEqual(body['error'], 'provider_removed')
+        self.upstream.assert_not_called()
+        self.browser.assert_not_called()
+
+    def test_all_catalog_and_export_exclude_retired_stored_offers(self):
+        self.seed('instacart')
+        for provider in RETIRED:
+            self.seed(provider)
+        for route in ('/api/v1/catalog', '/api/v1/catalog/export'):
+            with self.subTest(route=route):
+                code, body = self.request(route + '?provider=all&zip=63129&query=milk')
+                self.assertEqual(code, 200)
+                self.assertEqual([item['id'] for item in body['items']], ['instacart-milk'])
+                self.assertEqual(body['catalog']['products'], 1)
+        # Retirement filters public reads without deleting the evidence archive.
+        with self.catalog.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM offers').fetchone()[0], 4)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM search_snapshots').fetchone()[0], 4)
+        self.upstream.assert_not_called()
+        self.browser.assert_not_called()
+
+    def test_default_comparison_cannot_rehydrate_retired_cache(self):
+        for provider in RETIRED:
+            self.seed(provider)
+        code, body = self.request('/api/v1/compare', {
+            'zip': '63129', 'queries': ['milk'], 'mode': 'cache_only',
+        })
+        self.assertEqual(code, 200)
+        self.assertEqual([result['provider'] for result in body['providers']], ['instacart'])
+        self.assertEqual(body['providers'][0]['items'], [])
+        self.assertEqual(body['providers'][0]['status'], 'not_cached')
+        self.upstream.assert_not_called()
+        self.browser.assert_not_called()
+
+    def test_status_advertises_only_active_capabilities_and_no_legacy_access_state(self):
+        code, body = self.request('/api/v1/providers/status')
+        self.assertEqual(code, 200)
+        self.assertFalse(set(RETIRED).intersection(body['capabilities']))
+        for field in ('satsuma_configured', 'satsuma_base_url', 'satsuma_read_budget',
+                      'satsuma_background_ingestion', 'read_attempts_in_database', 'vercel_proxy'):
+            self.assertNotIn(field, body)
+        serialized = json.dumps(body)
+        self.assertNotIn(LEGACY_ENV['SATSUMA_API_KEY'], serialized)
+        self.assertNotIn(LEGACY_ENV['VERCEL_MEALME_API_KEY'], serialized)
+        self.upstream.assert_not_called()
+        self.browser.assert_not_called()

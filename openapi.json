@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "InstaSearch API Contract",
-    "version": "0.9.0",
-    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. Local baskets and provider links do not transfer items or place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels. Optional v0.7 freshness scheduling preserves five-minute quote expiry. Catalog descriptions remain browsable with expired prices explicitly labeled; background refresh never renews an existing search_id. Cache-only never schedules refresh. Provider tests add isolated, explicitly selected X-Byte/FoodSpark and Northfork reads plus synthetic Actowiz schema fixtures. They never fall back or issue shopping quotes. Live tests require a dedicated token, enable flag and separate persistent read allowance."
+    "version": "0.10.0",
+    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. Local baskets and provider links do not transfer items or place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels. Optional v0.7 freshness scheduling preserves five-minute quote expiry. Catalog descriptions remain browsable with expired prices explicitly labeled; background refresh never renews an existing search_id. Cache-only never schedules refresh. Provider tests add isolated, explicitly selected X-Byte/FoodSpark and Northfork reads plus synthetic Actowiz schema fixtures. They never fall back or issue shopping quotes. Live tests require a dedicated token, enable flag and separate persistent read allowance. MealMe/Satsuma and the Vercel Kroger/Square adapters are retired. Normal shopping search prefers X-Byte/FoodSpark only with configured server access, a retailer slug and a full address; otherwise it uses browser discovery. X-Byte errors never trigger fallback. Legacy comparison fetches through the browser but can reuse cached X-Byte observations with their original source provenance. Catalog all excludes retired sources. Explicit retired-provider selections return HTTP 410 provider_removed."
   },
   "servers": [
     {
@@ -111,7 +111,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Uses X-Byte/FoodSpark when server access, retailer and full location.address are present; otherwise uses the existing Instacart browser. A provider failure does not trigger fallback. Fresh cache reads retain their original provenance."
       }
     },
     "/api/v1/catalog": {
@@ -128,6 +129,19 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CatalogResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or unsupported provider selection."
+          },
+          "410": {
+            "description": "provider_removed: the selected provider is retired; no upstream request is sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -192,13 +206,11 @@
             "schema": {
               "enum": [
                 "instacart",
-                "mealme_satsuma",
-                "all",
-                "vercel_kroger",
-                "vercel_square"
+                "all"
               ],
               "default": "instacart"
-            }
+            },
+            "description": "Supported catalog namespace. all includes allowed sources only and excludes retired-provider records. The legacy instacart namespace may include FoodSpark observations; inspect item provenance."
           }
         ]
       }
@@ -392,6 +404,19 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Invalid request or unsupported provider selection."
+          },
+          "410": {
+            "description": "provider_removed: the selected provider is retired; no upstream request is sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         },
         "parameters": [
@@ -453,13 +478,11 @@
             "schema": {
               "enum": [
                 "instacart",
-                "mealme_satsuma",
-                "all",
-                "vercel_kroger",
-                "vercel_square"
+                "all"
               ],
               "default": "instacart"
-            }
+            },
+            "description": "Supported catalog namespace. all includes allowed sources only and excludes retired-provider records. The legacy instacart namespace may include FoodSpark observations; inspect item provenance."
           }
         ]
       }
@@ -508,7 +531,7 @@
     },
     "/api/v1/compare": {
       "post": {
-        "summary": "Compare isolated Instacart, Satsuma, Vercel Kroger and Vercel Square read results",
+        "summary": "Inspect legacy catalog observations",
         "requestBody": {
           "required": true,
           "content": {
@@ -545,12 +568,14 @@
                     "type": "array",
                     "items": {
                       "enum": [
-                        "instacart",
-                        "mealme_satsuma",
-                        "vercel_kroger",
-                        "vercel_square"
+                        "instacart"
                       ]
-                    }
+                    },
+                    "default": [
+                      "instacart"
+                    ],
+                    "minItems": 1,
+                    "maxItems": 4
                   },
                   "retailer": {
                     "type": "string",
@@ -586,8 +611,7 @@
                   "milk"
                 ],
                 "providers": [
-                  "instacart",
-                  "mealme_satsuma"
+                  "instacart"
                 ],
                 "mode": "catalog",
                 "allow_unverified_location": true
@@ -608,18 +632,33 @@
           },
           "429": {
             "description": "Comparison rate limited"
+          },
+          "422": {
+            "description": "Invalid request or unsupported provider selection."
+          },
+          "410": {
+            "description": "provider_removed: the selected provider is retired; no upstream request is sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
-        }
+        },
+        "description": "This compatibility route accepts only the instacart catalog namespace. Fresh fetches use the Instacart browser, while cached observations can originate from X-Byte and retain their source_provider. For explicit fresh X-Byte or Northfork reads use /api/v1/provider-tests/compare. Retired selections return HTTP 410 provider_removed before upstream work. No automatic supplier fallback occurs."
       }
     },
     "/api/v1/providers/status": {
       "get": {
-        "summary": "Sanitized provider activity and bounded test budget",
+        "summary": "Sanitized active-provider status, routing policy and activity",
         "responses": {
           "200": {
             "description": "No credentials or raw upstream payloads"
           }
-        }
+        },
+        "description": "Routing reports conditional X-Byte preference, configuration and required retailer/address inputs, browser discovery for other requests, no fallback on primary failure, and separate browser comparison/background routes. Configuration is not proof of upstream success. No credentials are returned."
       }
     },
     "/api/v1/diagnostics/http-compare": {
@@ -1471,8 +1510,12 @@
             "type": "string"
           },
           "url": {
-            "type": "string",
-            "format": "uri"
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Provider product link when returned. May be null for X-Byte/FoodSpark; do not invent a handoff URL."
           },
           "image_url": {
             "type": [
@@ -1483,7 +1526,10 @@
             "description": "Optional HTTPS thumbnail. Display a placeholder if missing or loading fails."
           },
           "availability": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "requested_zip": {
             "type": "string"
@@ -1599,6 +1645,14 @@
               "string",
               "null"
             ]
+          },
+          "source_provider": {
+            "type": "string",
+            "enum": [
+              "xbyte_foodspark",
+              "instacart_browser"
+            ],
+            "description": "Actual fetch transport when known. The legacy provider/cache namespace is not the fetch transport."
           }
         },
         "required": [
@@ -1718,7 +1772,7 @@
             "type": "string",
             "pattern": "^([a-z0-9][a-z0-9-]{0,63})?$",
             "default": "",
-            "description": "Empty discovers visible retailers; otherwise use a returned retailer id."
+            "description": "Retailer slug. With full location.address and configured server access, normal shopping search uses X-Byte/FoodSpark. Empty uses browser discovery."
           },
           "allow_unverified_location": {
             "type": "boolean",
@@ -1821,6 +1875,17 @@
               "type": "object",
               "additionalProperties": true
             }
+          },
+          "source_providers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "xbyte_foodspark",
+                "instacart_browser"
+              ]
+            },
+            "description": "Fetch transports represented by the returned items. May be absent from older responses."
           }
         },
         "required": [
@@ -2177,10 +2242,7 @@
           },
           "provider": {
             "enum": [
-              "instacart",
-              "mealme_satsuma",
-              "vercel_kroger",
-              "vercel_square"
+              "instacart"
             ]
           },
           "price": {
@@ -2252,10 +2314,7 @@
         "properties": {
           "provider": {
             "enum": [
-              "instacart",
-              "mealme_satsuma",
-              "vercel_kroger",
-              "vercel_square"
+              "instacart"
             ]
           },
           "status": {

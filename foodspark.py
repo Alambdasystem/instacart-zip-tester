@@ -19,11 +19,14 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def search_live(zip_code, queries, retailer, allow, browser_search):
-    key = os.getenv('FOODSPARK_API_KEY')
+    key = os.getenv('FOODSPARK_API_KEY', '').strip()
     location = current_location(zip_code)
     address = location.get('address')
     if not key or not retailer or not address:
-        return browser_search(zip_code, queries, retailer, allow)
+        payload = browser_search(zip_code, queries, retailer, allow)
+        return {**payload, 'source_provider': 'instacart_browser',
+                'items': [{**item, 'source_provider': 'instacart_browser'}
+                          for item in payload['items']]}
 
     items = {}
     for query in queries:
@@ -74,13 +77,14 @@ def search_live(zip_code, queries, retailer, allow, browser_search):
             items[(query, item_id)] = {
                 'id': item_id, 'name': name, 'size': size, 'price': float(price[1]),
                 'currency': 'USD', 'query': query, 'retailer': retailer,
-                'source': 'foodspark', 'observed_zip': zip_code, 'image_url': None,
+                'source': 'foodspark', 'source_provider': 'xbyte_foodspark',
+                'observed_zip': zip_code, 'image_url': None,
                 'url': None, 'price_basis': 'unspecified', 'price_basis_verified': False,
                 'availability': row.get('Availability'),
             }
 
     return {
-        'items': list(items.values()),
+        'items': list(items.values()), 'source_provider': 'xbyte_foodspark',
         'location': {
             'requested_zip': zip_code, 'observed_zip': zip_code, 'verified': True,
             'context_id': request_context_id(location), 'address_selected': True,

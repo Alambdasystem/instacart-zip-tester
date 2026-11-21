@@ -1,9 +1,17 @@
-# InstaSearch API Contract v0.3.0
+# InstaSearch API Contract v0.10.0
 
 Base URL: https://alambda-grocery-api.onrender.com/
 Interactive documentation: /docs
 Machine-readable source of truth: /openapi.json (OpenAPI 3.1)
 All POST bodies: Content-Type: application/json. UTF-8 JSON responses.
+
+## Current provider routing
+
+Normal `/api/v1/search` and `/api/v1/search/jobs` prefer X-Byte/FoodSpark when the server key is configured and the request includes a retailer slug plus full `location.address` (`line1`, `city`, `region`, and the enclosing `postal_code`). Otherwise those routes use the existing Instacart browser. A failed X-Byte request returns its error without falling back to another provider. Both normal search routes retain the existing connector enablement gate.
+
+MealMe/Satsuma and the Vercel Kroger/Square adapters are removed. Do not send their old provider names. `/api/v1/catalog` and `/api/v1/catalog/export` accept `instacart` or `all`; `all` excludes retired-provider records. The legacy `instacart` catalog namespace can contain X-Byte observations, so inspect `source_provider` (or legacy `source`) and the search response’s `source_providers` for the actual transport. FoodSpark products may have null `image_url`, `url`, or `availability`; do not invent product links or availability.
+
+Northfork and X-Byte can be selected independently through the isolated `/api/v1/provider-tests/*` contract documented in `/provider-lab` and `PROVIDER-LAB.md`. Those observations do not replace normal search, issue shopping quotes, or trigger automatic failover. Actowiz live keyword search is unsupported. The background collector remains browser based.
 
 ## Integration sequence
 
@@ -32,6 +40,7 @@ Non-2xx bodies may use `error` or legacy connector `status` as the error code; d
 | --- | --- | --- |
 | 404 | search_expired | Search again before selecting |
 | 409 | price_expired | Refresh affected cart lines |
+| 410 | provider_removed | Remove the retired provider selection; do not retry it |
 | 422 | invalid_request / location_required | Fix input or show location limitation |
 | 429 | busy / rate_limited | Back off with jitter; don't retry in a tight loop |
 | 502 | provider_timeout / provider_blocked / login_required / no_results / connector_error | Show a provider error; retain previously displayed data with its original age |
@@ -47,7 +56,7 @@ POST /api/v1/cache/invalidate is an operator action, not a normal Android search
 
 ## Authentication and provider scope
 
-This is an unauthenticated prototype; don't embed an invented API key or send customer credentials/payment details. Production integration needs an agreed authenticated gateway and durable storage. Current deployed connector is Instacart only; no MealMe provider selector or normalized comparison endpoint is claimed by this contract. `source` identifies the existing connector, not a provider choice request.
+This is an unauthenticated prototype; don't embed an invented API key or send customer credentials/payment details. Production integration needs an agreed authenticated gateway and durable storage. Normal search selects the transport using the requirements above. Supplier credentials remain on the server. `source` identifies observation provenance; it is not a provider-choice request field. The separate provider-test routes require their configured bearer token for live reads.
 
 Both cart_updated and provider_cart_updated remain false. No Instacart basket mutation, ordering, payment, or delivery promise is provided.
 
@@ -55,16 +64,11 @@ Both cart_updated and provider_cart_updated remain false. No Instacart basket mu
 
 Provide the Android repository/branch and its current product/search/cart DTOs (or one sample request and response). Also identify the existing networking and image-loading libraries. That lets us supply a compiling adapter with exact field mappings instead of assuming Kotlin, React Native, or Capacitor.
 
-## Optional provider-comparison contract
+## Legacy catalog-comparison contract
 
-`POST /api/v1/compare` accepts the same ZIP/queries/retailer/location flag plus
-`providers: ["instacart", "mealme_satsuma"]` and `mode: "catalog" | "live"`.
-Inspect `providers[].status` and `providers[].error` separately: one source can
-succeed while another fails. `items` are provider-scoped; never merge on display
-name or reuse IDs across sources. Image URLs are optional. MealMe currently uses
-Satsuma, not the Vercel proxy. Its raw `provider_price` and currency are diagnostic
-until units are verified; `price: null` and `selectable: false` prohibit cart use.
-Comparisons are observational, not a unified provider checkout.
+`POST /api/v1/compare` accepts the same ZIP/queries/retailer/location fields plus `providers: ["instacart"]` (the default) and `mode: "catalog" | "live" | "auto" | "cache_only" | "refresh"`. Fresh fetches on this route use the Instacart browser. It shares the legacy `instacart` cache and catalog, which may contain X-Byte observations from normal search. Preserve each item’s `source_provider` and the response’s `source_providers`; do not label cached X-Byte data as browser output. This route cannot request fresh X-Byte or Northfork reads. Inspect `providers[].status` and `providers[].error`. Comparison items always have `selectable: false` and cannot be used as shopping quotes.
+
+Removed provider selections return HTTP 410 `provider_removed` before upstream work. `/api/v1/catalog` and `/api/v1/catalog/export` return the same response when a retired provider is explicitly selected. Use `/api/v1/provider-tests/compare` for isolated supplier tests and preserve each supplier's separate outcome. Never merge products on display name or reuse IDs across sources.
 
 ## Retailer discovery and geographic scope
 
@@ -86,7 +90,7 @@ Modes: auto checks fresh memory then exact persistent snapshots and fetches miss
 
 ## v0.5 migration safety
 
-Normal search remains browser/cache-first. Anonymous HTTP is discovery-only and cannot establish local delivery context. Diagnostic `browser_mode` explicitly selects `auto`, `refresh`, or `cache_only`; frontend comparison requests `refresh`. Inspect `summary.comparability`, `summary.validation.gates`, source/cache status, coverage, and typed errors before comparing latency or prices.
+Normal search remains cache-first and uses the conditional X-Byte/browser routing described above. Anonymous HTTP is discovery-only and cannot establish local delivery context. Diagnostic `browser_mode` explicitly selects `auto`, `refresh`, or `cache_only`; frontend comparison requests `refresh`. Inspect `summary.comparability`, `summary.validation.gates`, source/cache status, coverage, and typed errors before comparing latency or prices.
 
 Catalog observations now retain opaque address-context identity. Legacy/contextless or incompatible observations cannot issue selection quotes. Carts spanning different location contexts return `409 mixed_location_context`. Exact persistent cache reads warm memory without renewing expiry.
 
@@ -102,9 +106,9 @@ Ingestion status includes `blocked_contexts`, `blocked_jobs`, `eligible_jobs` an
 For local basket handoff, use each selected item's HTTPS `url`. The tester labels these links **Open on Instacart**. No provider basket transfer or checkout session is created; the customer continues on the provider website.
 
 
-### v0.6 cancellable browser search
+### v0.6 cancellable search
 
-`POST /api/v1/search/jobs` accepts the standard Instacart SearchRequest and returns HTTP 202 with `job_id`, `job_token`, `status=queued`, and `expires_in`. Keep the token in memory. Send `Authorization: Bearer <job_token>` to `GET /api/v1/search/jobs/{id}` and `POST /api/v1/search/jobs/{id}/cancel` with `{}`. Tokens are never placed in URLs. Invalid tokens return 403. Jobs are retained for ten minutes; at most two active and 32 retained jobs are allowed.
+`POST /api/v1/search/jobs` accepts the standard SearchRequest with the same conditional X-Byte/browser routing and returns HTTP 202 with `job_id`, `job_token`, `status=queued`, and `expires_in`. Keep the token in memory. Send `Authorization: Bearer <job_token>` to `GET /api/v1/search/jobs/{id}` and `POST /api/v1/search/jobs/{id}/cancel` with `{}`. Tokens are never placed in URLs. Invalid tokens return 403. Jobs are retained for ten minutes; at most two active and 32 retained jobs are allowed.
 
 Poll status: queued, running, succeeded, failed or cancelled. On succeeded, `result` is the standard search response including `search_id`, so normal selection/cart endpoints apply. On failed/cancelled inspect `error.code` and `error.message`. Cancellation is acknowledged only when terminal status is cancelled. Browser execution is isolated in a child process with a shared deadline; cancellation terminates and reaps its running process tree on Linux. The regular synchronous search API remains supported. A client disconnect alone is not an acknowledged cancellation; clients should call the cancel endpoint. The tester attempts cancellation when leaving the page.
 
