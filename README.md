@@ -1,102 +1,83 @@
 # Alambda Grocery ZIP Lab
 
-The current Docker app provides a grocery search API, an ingested catalog, a bounded refresh queue, image thumbnails, and a local app cart. The original server.py is retained as a legacy keyless link tester.
+The Docker application runs `api_server.py`: a grocery search API, retained catalog, bounded background queue, API workbench and local app cart. The current contract is **v0.10.1**. The original `server.py` remains a separate legacy link tester.
 
-## Current provider policy (v0.10.0)
+## Neadz integration
 
-MealMe has been retired from this API. The Satsuma and Vercel Kroger/Square adapters, comparison options, and live calls are removed. Catalog reads and exports exclude their historical records, including when `provider=all` is requested.
+- [OpenAPI schema](openapi.json), also hosted at [the service's /openapi.json](https://alambda-grocery-api.onrender.com/openapi.json).
+- [Android integration contract](android-contract.md), also hosted at [/android-contract.md](https://alambda-grocery-api.onrender.com/android-contract.md).
+- [Neadz 0.10.1 migration handoff](neadz-migration-0.10.1.md): provider removal, precise DTO/error/polling rules, examples and the remaining live acceptance gate.
+- [Interactive documentation](https://alambda-grocery-api.onrender.com/docs), [API workbench](https://alambda-grocery-api.onrender.com/) and [isolated supplier lab](https://alambda-grocery-api.onrender.com/provider-lab).
 
-| Entry point | Current routing |
+Version 0.10.1 fills contract gaps for existing `partial`/`cache_miss` search results, nullable job results/errors, savings, readiness, routing and ingestion status. Existing wire types are retained. Small runtime fixes accept faithful normalized full-address X-Byte acknowledgments, report shared deadlines as `provider_timeout`, and require literal boolean `acknowledge:true` for operator recovery. These checks do not establish live supplier success.
+
+## Current provider policy
+
+MealMe, Satsuma and the Vercel Kroger/Square adapters were removed in 0.10.0. Their active calls/options are gone. Compare, catalog and export reject explicitly selected retired names with HTTP 410 `provider_removed`; catalog/export exclude historical retired records even for `provider=all`.
+
+| Entry point | Routing |
 | --- | --- |
-| `/api/v1/search` and `/api/v1/search/jobs` | X-Byte/FoodSpark first when the server key, retailer slug, and full `location.address` are present. Otherwise the existing Instacart browser handles discovery. An X-Byte error is returned without switching providers. |
-| `/api/v1/compare` | Legacy catalog observations. Fresh fetches use the Instacart browser; cached observations retain their actual source, including X-Byte. `providers` defaults to `["instacart"]`; retired providers return HTTP 410 `provider_removed`. |
-| `/api/v1/provider-tests/search` and `/api/v1/provider-tests/compare` | Explicit, isolated X-Byte and Northfork reads, plus Actowiz schema fixtures. These tests do not replace the shopping search route or create selectable quotes. Actowiz live keyword search is unsupported. |
-| Background ingestion | Existing bounded Instacart browser collection. |
+| `/api/v1/search` and `/api/v1/search/jobs` | Fresh fetches use X-Byte/FoodSpark when the server key, retailer slug and full address are present; otherwise Instacart browser discovery. An X-Byte error does not switch providers. Fresh exact snapshots can satisfy the request first. |
+| `/api/v1/compare` | Only `providers:["instacart"]` is supported/defaulted. Fresh fetches use the browser; shared cache/catalog observations retain their actual source, including X-Byte. Results are not selectable shopping quotes. |
+| `/api/v1/provider-tests/search` and `/compare` | Explicit isolated X-Byte and Northfork reads, plus Actowiz fixtures. These tests do not populate shopping/cart state or become automatic fallback. Actowiz live keyword search is unsupported. |
+| Background ingestion | Bounded Instacart browser collection. |
 
-Use `/provider-lab` to select and compare the supported suppliers independently. `GET /api/v1/providers/status` reports normal routing; `GET /api/v1/provider-tests/status` reports test configuration and allowance. Configured access does not prove current upstream success. See [PROVIDER-LAB.md](PROVIDER-LAB.md) for the isolated test contract.
+Configure `FOODSPARK_API_KEY` on the server and send a retailer slug plus `location.address` (`line1`, `city`, `region`, optional `line2`) with a five-digit ZIP to select X-Byte for a new normal shopping fetch. ZIP-only or missing-retailer requests use browser discovery. Both shopping routes retain the `CONNECTOR_ENABLED` gate. Supplier secrets do not belong in the APK or browser.
 
-For X-Byte on the normal shopping path, configure `FOODSPARK_API_KEY` on the server and send a retailer slug with `location.postal_code`, `location.country_code`, and `location.address` containing `line1`, `city`, and `region`. ZIP-only or missing-retailer requests use browser discovery. The normal search routes retain their existing `CONNECTOR_ENABLED` gate. Never put a supplier key in Android or the browser.
+`GET /api/v1/providers/status` reports conditional normal routing. `GET /api/v1/provider-tests/status` reports isolated test configuration and allowance; `live_ready` does not prove current upstream availability. See [PROVIDER-LAB.md](PROVIDER-LAB.md) for that separate contract.
 
-`GET /api/v1/catalog` and `/api/v1/catalog/export` accept `provider=instacart` (default) or `all`, which means only the supported catalog namespace. The legacy `instacart` namespace can contain FoodSpark observations; inspect `source_provider` (or legacy `source`) and the search response’s `source_providers` rather than treating that namespace as proof of browser origin. X-Byte results may have no product image or product URL. Northfork is not an automatic failover source.
+Catalog `provider` accepts `instacart` (default) or `all`, meaning allowed sources only. The legacy `instacart` storage namespace can contain FoodSpark observations. Preserve `item.source_provider` (`xbyte_foodspark` / `instacart_browser`) and search `source_providers`; do not use the namespace alone as a supplier label. FoodSpark may return null image, product URL or availability. Current FoodSpark products lack verified primary charge-unit/product-URL evidence and therefore do not qualify for the existing strict `/savings` comparison.
 
-The production Docker service runs `api_server.py` and uses its existing persistent disk. The legacy instructions below describe the original link tester and earlier API versions; `/openapi.json` and the current policy above govern integrations.
+## Shopping API
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/v1/search` | Synchronous normalized search with fresh quote references; HTTP 200 can be `ok`, `partial` or `cache_miss`. |
+| `POST /api/v1/search/jobs` | Cancellable search; returns a short-lived job capability. Only `auto`, `refresh`, `cache_only` modes. |
+| `GET /api/v1/search/jobs/{id}` | Poll with the returned bearer token. Failed jobs still return HTTP 200 with a nested typed error. |
+| `POST /api/v1/search/jobs/{id}/cancel` | Same bearer token and `{}` body; cancellation is asynchronous. |
+| `GET /api/v1/catalog` | Stored discovery preview, with freshness/context flags; no upstream request. |
+| `POST /api/v1/select` | Optional selection of 1–60 IDs from one unexpired search; duplicates are deduplicated. |
+| `POST /api/v1/cart` | Validate up to 60 local cart lines and integer quantities 1–99 against server-held prices. |
+| `POST /api/v1/savings` | Compare exactly two qualifying server-issued offers from distinct merchants. Client prices are rejected. |
+
+Shopping requests require `query` or `queries` (1–3 nonblank terms, at most 120 characters each) and `zip` or `location.postal_code`. If both ZIP forms are supplied they must match. `queries` takes precedence. Full location can also carry coordinates, but provider support must be established; unsupported mechanisms return `location_unsupported`.
+
+`auto` checks fresh exact snapshots and fetches misses. `cache_only` never fetches or schedules refresh. `refresh` requests a fresh snapshot; concurrent refreshes may coalesce. On synchronous `/search`, legacy `live` and `catalog` are cache-first aliases of `auto`. On `/compare`, `catalog` means stored discovery-only. Do not interchange these endpoint-specific meanings.
+
+Cart state remains in the app. Selection/cart responses never mutate a provider basket; `cart_updated` and `provider_cart_updated` remain false. Savings requires matching product identity/name/size, acknowledged location/context, verified per-item charge basis, USD, no unvalidated promotion and unexpired prices. It covers observed merchandise prices, excluding taxes, fees, delivery and checkout verification.
+
+## Freshness, persistence and location
+
+Price snapshots expire within 300 seconds; reads never slide expiry. Response `expires_in` is the earliest returned snapshot expiry. A partial result identifies uncovered terms. `cache_miss` has no search ID and cannot supply cart/savings references. Existing quote IDs never gain lifetime from background refresh.
+
+The deployed Docker service uses its configured persistent SQLite disk. The path is `CATALOG_PATH` when supplied, otherwise `alambda-grocery-catalog.sqlite` under `RENDER_DISK_MOUNT_PATH` or `/tmp`. Exact snapshots, normalized product/offer/context records and scheduler state can survive restart on durable storage, retaining their expiry. Search quote IDs, jobs/tokens and precise demand-refresh contexts remain process-local. A restart can invalidate references before their displayed expiry.
+
+Catalog prices can remain numeric after expiry as historical observations. Inspect `price_fresh`, `price_status`, `selectable`, context and evidence flags. With a ZIP, unacknowledged/mismatched rows are withheld unless `allow_unverified_location=true` is explicitly requested. A requested ZIP or an address acknowledgment does not verify merchant branch, stock or delivery eligibility. Catalog counts and worker `running:true` are not proofs of local inventory.
+
+## Runtime and operations
+
+The Docker image installs the matching pinned Playwright browser/package and starts `api_server.py`. Relevant settings are `PORT`, `CONNECTOR_ENABLED`, `FOODSPARK_API_KEY`, `CATALOG_PATH`, `RENDER_DISK_MOUNT_PATH`, `INGEST_ENABLED`, `INGEST_ZIP`, `INGEST_RETAILER`, and the optional `INSTACART_FRESHNESS_V07` policy override. Supplier-test enablement/tokens/allowances are separate; see the provider-lab guide. Optional authorized browser state is configured privately with `INSTACART_STORAGE_STATE_PATH`, never through a public cookie upload.
+
+The worker uses curated discovery terms, at most five requested ZIPs/5,000 jobs, one browser and 120 attempts/hour. These are bounded observations, not an exhaustive inventory or measured popularity ranking. Refresh tiers and admitted demand are reported in ingestion status. Login-required contexts are suspended by ZIP/retailer; screening pauses the browser worker. Foreground queue waits are bounded to 15 seconds normally or 65 seconds for coalesced refresh, within a shared 120-second request budget.
+
+- `/health`: process liveness and loaded schema version.
+- `/ready`: SQLite readiness, not supplier availability.
+- `/api/v1/ingestion/status?offset=0&limit=50`: typed state, queue pagination, nullable errors/pause, resources and catalog counts. `limit` is clamped to 1–100.
+- `/api/v1/catalog/export`: up to 5,000 allowed observations, including explicitly marked history.
+- `/api/v1/cache/invalidate`: current public prototype maintenance endpoint; retailer slug or `*`, optional ZIP (null/omitted means all ZIPs). Rate-limited once per group/minute.
+- `/api/v1/ingestion/recover`: operator bearer credential plus literal `{"acknowledge":true}`. The server-side `operator_recover.py --acknowledge-provider-access` tool reads the credential without printing it and probes the retained failed context.
+
+Normal shopping routes and read-only status endpoints currently require no application bearer token. Job capability auth, operator recovery auth and live supplier-test auth are separate. Avoid embedding any operator or supplier credential in the app.
+
+`/api/v1/diagnostics/http-compare` is an optional transport diagnostic. It always attempts direct anonymous HTTP even with `browser_mode:cache_only`; that setting controls only the browser branch. It cannot issue quotes or alter normal shopping routing. A screening response stops the browser branch. Its typed parity report does not by itself approve a rollout.
+
+## Development checks
+
+Install test dependencies with `pip install jsonschema openapi-spec-validator`. Use an isolated `CATALOG_PATH` so developer data cannot affect fixtures. Run `python -m unittest discover -v`; focused HTTP/schema coverage includes `test_contract`, `test_neadz_schema` and `test_runtime_contract`. The tests mock suppliers and exercise real local handlers, including failure variants. They do not prove upstream access or replace device acceptance on the latest APK.
 
 ## Legacy link tester
 
-Python 3.11+; run `python server.py`, then open http://localhost:3000.
+The original `server.py` is separate from the production Docker API. Run it with Python 3.11+ at `http://localhost:3000`. Its environment uses an approved `INSTACART_API_KEY`, matching `INSTACART_ENV` (`development` by default or `production`), private `TESTER_ACCESS_TOKEN`, and optional `PORT`.
 
-Server environment variables:
-- `INSTACART_API_KEY`: approved Instacart Developer Platform key. Never put this in frontend code.
-- `INSTACART_ENV`: `development` (default) or `production`. Must match key.
-- `TESTER_ACCESS_TOKEN`: random private token required for API actions. Enter the same token in the browser. Not stored by the frontend.
-- `PORT`: supplied by Render, defaults to 3000 locally.
-
-## Legacy link-tester deployment
-
-Push these files to a private GitHub repository and create a Python Web Service connected to it. Build command: `python --version`. Start command: `python server.py`. Health check: `/health`. Choose the free plan if available. Set the three variables above through Render's environment settings. No database or packages are required.
-
-## Legacy Instacart link API behavior
-
-`GET /idp/v1/retailers?postal_code=63129&country_code=US` finds nearby retailer organizations, not exact branches or product inventory. `POST /idp/v1/products/products_link` creates one shoppable list from food names. List URLs do not embed ZIP codes; users confirm delivery address and retailer on Instacart. The tester does not claim per-ZIP product availability, live prices, McDonald's support, or a prefilled cart. Website search links are experimental and use the customer's Instacart session location.
-
-On October 30, 2026, Instacart's public developer application page said applications were closed and no waitlist was available. Existing approved keys can be configured when available.
-
-API reference: https://docs.instacart.com/developer_platform_api/
-
-## Middleware API and app cart (v0.1)
-
-The Docker service runs `api_server.py`, serving the API tester at `/` and `/docs`, with a machine-readable contract at `/openapi.json`.
-
-- `POST /api/v1/search`: `{ "zip": "63129", "queries": ["milk"], "retailer": "aldi", "allow_unverified_location": false }`. Accepts up to three queries. Returns normalized items, search ID, timestamp, location verification, and warnings. Explicitly enabling unverified location permits nonlocal results; no login or screening bypass is implemented.
-- `POST /api/v1/select`: `{ "search_id": "returned ID", "item_ids": ["returned item ID"] }`. Validates selected IDs against server-held search results.
-- `POST /api/v1/cart`: `{ "lines": [{ "search_id": "returned ID", "item_id": "returned item ID", "quantity": 2 }] }`. Validates quantities and prices against recent searches and calculates subtotal. Expired prices return HTTP 409.
-- `GET /health`: process health.
-
-`CONNECTOR_ENABLED=true` enables the browser connector. The official Playwright Python image and package are pinned to matching versions. One concurrent search and three searches per minute per client are allowed. Results expire after five minutes and are lost when the free instance restarts. App cart contents persist in browser localStorage; they must be refreshed and revalidated after server-side price expiry. Neither selection nor cart validation writes to Instacart's basket or places an order. Provider failures never return saved sample products as live results.
-
-Run tests with `python -m unittest test_api -v`. Unit tests mock the provider and verify normalization, invalid input, location failure, selection integrity, quantities, subtotal, expiry, and the OpenAPI route. They do not prove that Instacart will accept the deployed browser.
-
-### Five-minute smart cache
-
-Successful searches are cached in server memory for at most 300 seconds. Keys include provider context (Instacart), requested ZIP, individual normalized query, retailer, and whether unverified location was explicitly allowed. Cache hits do not extend expiry. Changing a list from milk to milk plus eggs fetches only eggs; milk is reused while fresh. A store/location group's five-minute clock begins at its first fetch; newer products from that store expire with that clock. A cross-store query is also invalidated when a participating store expires. Product and cart price snapshots never outlive the source cache entry. No provider failures are cached as successful results.
-
-Responses include `cache.hit`, `cache.age_seconds`, `cache.expires_in`, and `cache.ttl_seconds`. `POST /api/v1/cache/invalidate` accepts `{"retailer":"aldi","zip":"63129"}` to expire matching bundles and cart validation snapshots, or retailer `*` for every retailer. This prototype rate-limits invalidation to once per group per minute. The cache is bounded to 100 bundles, one provider browser operates at a time, and the search handler does not poll. The optional ingestion worker separately refreshes its queue. Memory cache is lost on service sleep or redeployment; a future multi-instance version needs a shared Redis/Valkey store. Restaurant checkout is not implemented. Supplier observations can be compared independently in `/provider-lab`; restaurant checkout is not supplied by these tests.
-
-## Trial catalog ingestion loop
-
-Set `INGEST_ENABLED=true` on the Docker API service to start one embedded background queue worker. Its curated starter terms are milk, eggs, bread, chicken, bananas, rice, cheese, coffee, apples, potatoes, pasta, and yogurt. These are common grocery categories, not a measured ranking or an exhaustive catalog. `INGEST_ZIP` defaults to 63129; the collector explicitly marks unverified location data. No additional paid service is required for this bounded trial.
-
-Each successful job upserts normalized products in `/tmp/alambda-grocery-catalog.sqlite`, warms the shared query cache, and schedules its next attempt four minutes later. The loop waits 15 seconds between jobs, shares the single browser semaphore with foreground calls, and caps attempts at 120/hour. Failures back off up to 30 minutes. Login or screening pauses the entire worker. Queue throughput may be too low to refresh all categories within five minutes; expired prices remain visible as stale and cannot be selected.
-
-- `GET /api/v1/ingestion/status`: active query, queue state, attempts, errors, product counts, memory high-water marks, and disk footprint.
-- `GET /api/v1/catalog?queries=milk&queries=eggs&zip=63129&allow_unverified_location=true`: search stored data without opening another browser. Returns fresh/expired price flags and a selection ID for permitted fresh items.
-- `GET /api/v1/catalog/export`: export up to 5,000 normalized product snapshots.
-
-SQLite persists across process reopenings but this free instance's filesystem is ephemeral: catalog data and queue state may be lost on deploy, restart, or sleep. The worker does not keep the service artificially awake. A paid always-on worker and durable storage are a separate upgrade. No automatic paid upgrades are configured. Store-wide cache invalidation also expires stored price snapshots.
-
-## Demand-driven ZIP and product footprint
-
-Incoming catalog and live-search payloads register `(requested ZIP, retailer, normalized query)` jobs. A new ZIP starts with its requested terms plus milk, eggs, and bread. The starter ZIP has twelve curated common queries. Repeat requests increment demand counters without duplicating jobs. Scheduling prioritizes never-fetched and least-recently-successful work, with demand breaking ties. Trial limits: five requested ZIPs, sixty jobs total, twenty queries per ZIP/retailer, one browser, 120 attempts/hour. Capacity rejections appear in discovery responses and limits appear in ingestion status. New queries are added only to their requested context rather than multiplying across every ZIP.
-
-The connector attempts the visible ZIP selector when possible. If a street address or login is required, unverified records remain explicitly labeled and are not proof of local inventory coverage. A larger list of requested ZIPs is a discovery footprint, not a verified store-location footprint.
-
-Product responses now carry `image_url` when a supported HTTPS Instacart/CDN image is present. The catalog retains the URL with the product. The UI loads thumbnails lazily, uses no referrer, and shows an unavailable-image label for missing or failed images. Worker browsers skip image downloads to save resources while still capturing the image URL from rendered markup.
-
-## InstaSearch API Contract v0.2
-
-Interactive Swagger UI is served at `/docs` and `/swagger`. `/openapi.json` defines reusable request/response models and examples. `/android-contract.md` explains the Android integration sequence, nullable images, location verification, cache expiry, errors, retry policy and prototype boundaries. Swagger UI assets are pinned to 5.17.14 and loaded from unpkg.
-
-Run contract checks with `pip install jsonschema openapi-spec-validator`, then `CATALOG_PATH=/tmp/instasearch-tests.sqlite python -m unittest test_api test_cache test_ingestion test_contract -v`. Use an isolated catalog path so local stale records cannot affect fixtures.
-
-## Legacy catalog comparison
-
-`POST /api/v1/compare` retains the existing observational envelope for the legacy `instacart` catalog namespace. Example: `{"zip":"63129","queries":["milk"],"providers":["instacart"],"mode":"catalog"}`. `catalog` and `cache_only` do not call upstream; `live`/`auto` reuse fresh snapshots and `refresh` requests a fresh browser observation. The shared cache can contain X-Byte results from normal shopping search. Preserve their `source_provider`; the namespace does not imply browser origin. HTTP 200 means the comparison completed; inspect `providers[].status` and `providers[].error` for the source outcome. Comparison items are not selectable shopping quotes.
-
-Use the separate `/api/v1/provider-tests/compare` contract for explicit X-Byte/Northfork supplier comparisons. A legacy comparison request cannot request a fresh fetch from those suppliers or silently fall back to them. Requests naming retired providers return HTTP 410 `provider_removed` before upstream work; catalog and export requests use the same retirement response.
-
-## Persistent storage baseline (v0.4)
-The deployed service now uses paid 2 GB compute and a 1 GB disk at /var/data. Older sections above describe historical releases. Current seeds: 394 curated terms, five requested ZIPs and 5,000 maximum jobs. Local provider budgets persist on disk and are not increased by this release.
-
-Search and comparison auto mode check fresh memory and exact durable snapshots, fetching only missing queries. Cache-only never calls upstream; refresh bypasses fresh caches. Stored /catalog remains discovery search with explicit age/expiry. Address/GPS input is supported by the request contract; each adapter either uses its supported mechanism or returns location_unsupported. No location is considered verified because an address was merely supplied. Instacart browser address selection requires visible acknowledgment; delivery and exact branch are separate unknowns.
-
-Foreground browser work waits ahead of subsequent background jobs and rechecks caches after waiting. Native SQLite pre-v04 backup is created once before schema additions. This on-disk backup is not an offsite disaster recovery policy.
+That tester creates Instacart Developer Platform shoppable-list links, not local product quotes or a prefilled provider basket. The customer confirms address and retailer on the provider site. Its API reference is https://docs.instacart.com/developer_platform_api/ . Use the current Docker contract above for Neadz integration.

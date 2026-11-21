@@ -1,152 +1,202 @@
-# InstaSearch API Contract v0.10.0
+# Neadz / InstaSearch API Contract v0.10.1
 
-Base URL: https://alambda-grocery-api.onrender.com/
-Interactive documentation: /docs
-Machine-readable source of truth: /openapi.json (OpenAPI 3.1)
-All POST bodies: Content-Type: application/json. UTF-8 JSON responses.
+Base URL: `https://alambda-grocery-api.onrender.com`
 
-## Current provider routing
+- [OpenAPI 3.1 schema](https://alambda-grocery-api.onrender.com/openapi.json)
+- [Interactive API documentation](https://alambda-grocery-api.onrender.com/docs)
+- [Hosted Android contract](https://alambda-grocery-api.onrender.com/android-contract.md)
+- [Neadz migration handoff](https://github.com/Alambdasystem/instacart-zip-tester/blob/main/neadz-migration-0.10.1.md)
 
-Normal `/api/v1/search` and `/api/v1/search/jobs` prefer X-Byte/FoodSpark when the server key is configured and the request includes a retailer slug plus full `location.address` (`line1`, `city`, `region`, and the enclosing `postal_code`). Otherwise those routes use the existing Instacart browser. A failed X-Byte request returns its error without falling back to another provider. Both normal search routes retain the existing connector enablement gate.
+This document describes the current wire contract. Version 0.10.1 explicitly types existing search variants, jobs, savings and operational responses; it does not rename their fields or change JSON number/boolean/string types. All POST bodies are UTF-8 JSON objects with `Content-Type: application/json`, between 1 and 10,000 bytes. JSON responses include `X-Request-ID`; retain it with the app build and HTTP status when diagnosing a failure, without logging credentials or full addresses.
 
-MealMe/Satsuma and the Vercel Kroger/Square adapters are removed. Do not send their old provider names. `/api/v1/catalog` and `/api/v1/catalog/export` accept `instacart` or `all`; `all` excludes retired-provider records. The legacy `instacart` catalog namespace can contain X-Byte observations, so inspect `source_provider` (or legacy `source`) and the search response’s `source_providers` for the actual transport. FoodSpark products may have null `image_url`, `url`, or `availability`; do not invent product links or availability.
+## Provider routing and provenance
 
-Northfork and X-Byte can be selected independently through the isolated `/api/v1/provider-tests/*` contract documented in `/provider-lab` and `PROVIDER-LAB.md`. Those observations do not replace normal search, issue shopping quotes, or trigger automatic failover. Actowiz live keyword search is unsupported. The background collector remains browser based.
+New fetches for `/api/v1/search` and `/api/v1/search/jobs` use **X-Byte/FoodSpark when all three requirements are present**: configured server `FOODSPARK_API_KEY`, a retailer slug, and a full `location.address` containing `line1`, `city` and `region`. Supply the ZIP as `location.postal_code` or top-level `zip`. Missing any requirement selects the existing Instacart browser. Both shopping routes also require the server's `CONNECTOR_ENABLED` gate. An X-Byte failure returns an error; it does not trigger a browser or Northfork retry.
 
-## Integration sequence
+Fresh exact snapshots can satisfy a request before a new fetch. Therefore the configured routing preference is not proof of the source of every returned item:
 
-1. GET /api/v1/catalog?zip=63129&queries=milk&queries=eggs for stored results. Each query parameter is repeated, not comma-joined. Terms match with OR. An empty catalog means no matching observations; it does not establish local unavailability.
-2. POST /api/v1/search if a fresh provider fetch is needed. Send {"zip":"63129","queries":["milk","eggs"],"retailer":"","allow_unverified_location":false}. Maximum 3 terms, 120 characters each; live retailer filters: empty (all visible provider-context retailers) or a retailer id returned in retailers. `query` is a single-term alias. `queries` takes precedence.
-3. Render items using id, name, size, price, currency, retailer, image_url and url. IDs are opaque snapshot identifiers, not stable SKU/UPC identifiers. Deduplicate across providers only with an explicit verified mapping, never the name alone.
-4. Persist selected lines on the Android side: search_id + item_id + quantity. Optional POST /api/v1/select validates item_ids within one search; selection_id isn't required for cart validation.
-5. POST /api/v1/cart with {"lines":[{"search_id":"returned-search-id","item_id":"returned-item-id","quantity":2}]}. Maximum 60 distinct (search_id,item_id) lines; quantity is an integer 1–99. Empty lines is supported. The response contains item_count (sum of quantities), items with line_total, subtotal, currency and location_verified. Server totals exclude taxes and fees. No persistent server cart is created; Android owns cart storage and removal.
-6. On 409 price_expired, rerun affected searches and require users to confirm replacement products/prices. Don't submit old item IDs against new search IDs. Snapshot state may disappear during a restart before five minutes.
+| Field | Meaning |
+| --- | --- |
+| `item.source_provider` | Actual shopping fetch transport: `xbyte_foodspark` or `instacart_browser`. Preserve it for labels and diagnostics. |
+| `source_providers` | Transports represented in the returned search items; a partial/cache result can contain more than one. |
+| `item.provider` | Legacy `instacart` cache/catalog namespace, when present. It can contain X-Byte observations. |
+| `item.source` | Older provenance string, such as `foodspark` or `instacart_public_browser`; retain for compatibility when `source_provider` is absent in older saved app data. |
+| `cache.sources` / `item.cache_source` | Where a snapshot was read, such as `live`, `memory_cache`, `persistent_cache` or `catalog_discovery`; these are not supplier names. |
 
-## Model rules
+MealMe, Satsuma and the Vercel Kroger/Square adapters were removed in 0.10.0. Do not offer or send `mealme`, `satsuma`, `mealme_satsuma`, `vercel_kroger`, `vercel_square` or `vercel_proxy`. Explicit retired selections on compare, catalog and export return **410 `provider_removed`**. Catalog `provider=all` excludes retired rows. Historical rows retained in the database are not active API results.
 
-- Product.size is nullable. Product.image_url: nullable HTTPS URL. Load asynchronously with your existing image library, cache by URL, and show a placeholder for null/HTTP failure. Images remain hosted by the provider and can change or expire.
-- Product.price: JSON number, USD unit price. Convert to a decimal type for money calculations; never trust client-computed totals for checkout.
-- Product.price_fresh, price_expires_in, age_seconds, last_seen and selectable are catalog fields. last_seen is a UTC ISO 8601 timestamp. Live products do not include those fields; use the response expires_in and location.verified instead.
-- Catalog: only selectable=true items can be submitted using the returned search_id. Stale metadata may remain visible, but stale prices aren't valid for cart validation. A catalog search_id with zero selectable items doesn't create a usable selection snapshot.
-- Live response: status=ok, search_id, items, location, cache, expires_in, cart_updated=false. Catalog response: status=catalog, search_id, items, location, cache, warnings, discovery, catalog.
-- Location: requested_zip is the requested partition, observed_zip can be null, verified is authoritative. Never label unverified results as local inventory. Strict mode may return 422 location_required. Unverified demo results require an explicit user toggle; don't silently retry with allow_unverified_location=true.
-- Preserve unknown fields for forward compatibility where practical. Missing optional fields must not crash Android decoding.
+X-Byte and Northfork also have an **independent test contract** at `/api/v1/provider-tests/*`, described in [PROVIDER-LAB.md](https://github.com/Alambdasystem/instacart-zip-tester/blob/main/PROVIDER-LAB.md) and [/provider-lab](https://alambda-grocery-api.onrender.com/provider-lab). Its fixture mode is synthetic; live mode requires the dedicated test bearer token and allowance. Those results never issue shopping quotes, populate a cart or replace normal shopping routing. Actowiz live keyword search is unsupported. `live_ready` in test status means configuration and allowance pass, not that a live supplier request has succeeded. Background ingestion remains browser based.
 
-## Errors and retries
+## Core request and mode rules
 
-Non-2xx bodies may use `error` or legacy connector `status` as the error code; decode both with message, optional items and location. The schema intentionally describes the current service rather than inventing a unified envelope.
+Shopping search requires a five-digit US ZIP and `query` or `queries`. `queries` takes precedence when both are supplied. Send one to three nonblank strings of at most 120 characters; the server trims and deduplicates them. `retailer` is empty or a lowercase slug matching `[a-z0-9][a-z0-9-]{0,63}`. Empty retailer discovers visible provider-context retailers, subject to provider coverage.
 
-| HTTP | Code / meaning | Android handling |
-| --- | --- | --- |
-| 404 | search_expired | Search again before selecting |
-| 409 | price_expired | Refresh affected cart lines |
-| 410 | provider_removed | Remove the retired provider selection; do not retry it |
-| 422 | invalid_request / location_required | Fix input or show location limitation |
-| 429 | busy / rate_limited | Back off with jitter; don't retry in a tight loop |
-| 502 | provider_timeout / provider_blocked / login_required / no_results / connector_error | Show a provider error; retain previously displayed data with its original age |
-| 503 | connector_disabled | Show temporary unavailability |
-
-Live browser capacity is one concurrent search and three fresh searches per minute per source IP. Several mobile users behind one backend may share that rate limit. Suggested client backoff for busy/rate limit: 5s, 15s, 30s, maximum three attempts. Stop automatic retries for login_required/provider_blocked. Don't start overlapping searches. Cancel abandoned Android requests, and use a generous configurable read timeout (e.g. 120s) for live searches/cold starts; catalog reads should be fast after wake-up.
-
-## Cache and operational boundaries
-
-Price freshness is at most 300 seconds, non-sliding. Return cache.hit, partial_hit, hit_queries, fetched_queries, age_seconds and expires_in when present. Re-reading doesn't extend freshness. New ZIP/term payloads can enqueue collector jobs within bounded capacity; enqueue isn't a promise of fresh or geographically verified data. Background refresh only runs while this free service is awake. Catalog and snapshots aren't durable across deployment/restart on the current free setup.
-
-POST /api/v1/cache/invalidate is an operator action, not a normal Android search step. It accepts a retailer slug or * plus optional ZIP and expires related price snapshots. GET /api/v1/ingestion/status and /api/v1/catalog/export are diagnostics.
-
-## Authentication and provider scope
-
-This is an unauthenticated prototype; don't embed an invented API key or send customer credentials/payment details. Production integration needs an agreed authenticated gateway and durable storage. Normal search selects the transport using the requirements above. Supplier credentials remain on the server. `source` identifies observation provenance; it is not a provider-choice request field. The separate provider-test routes require their configured bearer token for live reads.
-
-Both cart_updated and provider_cart_updated remain false. No Instacart basket mutation, ordering, payment, or delivery promise is provided.
-
-## To mirror your app exactly
-
-Provide the Android repository/branch and its current product/search/cart DTOs (or one sample request and response). Also identify the existing networking and image-loading libraries. That lets us supply a compiling adapter with exact field mappings instead of assuming Kotlin, React Native, or Capacitor.
-
-## Legacy catalog-comparison contract
-
-`POST /api/v1/compare` accepts the same ZIP/queries/retailer/location fields plus `providers: ["instacart"]` (the default) and `mode: "catalog" | "live" | "auto" | "cache_only" | "refresh"`. Fresh fetches on this route use the Instacart browser. It shares the legacy `instacart` cache and catalog, which may contain X-Byte observations from normal search. Preserve each item’s `source_provider` and the response’s `source_providers`; do not label cached X-Byte data as browser output. This route cannot request fresh X-Byte or Northfork reads. Inspect `providers[].status` and `providers[].error`. Comparison items always have `selectable: false` and cannot be used as shopping quotes.
-
-Removed provider selections return HTTP 410 `provider_removed` before upstream work. `/api/v1/catalog` and `/api/v1/catalog/export` return the same response when a retired provider is explicitly selected. Use `/api/v1/provider-tests/compare` for isolated supplier tests and preserve each supplier's separate outcome. Never merge products on display name or reuse IDs across sources.
-
-## Retailer discovery and geographic scope
-
-SearchResponse.retailers lists visible retailer sections (id, name, products_returned, branch_verified=false). diagnostics lists query, cards_seen, products_returned, retailers_with_products, settled, page_url and observed_zip. The public page is bounded to 500 products per query, without a per-retailer cap, collected round-robin after stabilization; it is not a complete catalog. Exact retailer requests filter returned links to that retailer id.
-
-location.verified means only that the active address-control ZIP matches the requested ZIP after the search. verification_scope=zip_only, store_branch_verified=false and delivery_serviceability_verified=false. Do not infer a local store from a product brand, retailer slug, or requested ZIP partition. Unverified cached rows keep their source observed_zip and must remain labeled as provider-context observations.
-
-
-## v0.4 location and cache flow
-SearchRequest accepts legacy `zip` or `location.postal_code` with country US and optional address (line1, city, region) OR coordinates (latitude, longitude). Conflicting ZIPs and unknown fields return 422. Address/GPS values are not silently discarded: unsupported provider modes return location_unsupported. Address selection requires provider acknowledgment and does not prove delivery serviceability.
-
-Modes: auto checks fresh memory then exact persistent snapshots and fetches misses; cache_only never fetches; refresh bypasses caches. Legacy live remains cache-first and catalog remains discovery-only. A cached result does not prove local stock. Search cache metadata includes sources; per-provider items include cache_source. Prices expire within five minutes; persistent reads do not extend expiry. Selection tokens remain process-local and expire on restart. Foreground searches wait up to 90 seconds for the single browser slot, ahead of the next background job.
-
-
-### Diagnostic transport comparison
-
-`POST /api/v1/diagnostics/http-compare` accepts the search request with exactly one query. It returns `direct_http`, `browser`, and `summary` (counts, image/price coverage, retailer IDs, elapsed time, and matching product/retailer IDs). The browser branch uses `auto` cache-first behavior. Direct HTML does not establish delivery location, does not create selection tokens, and never supplies cart quotes. Normal search behavior is unchanged. An explicit screening response stops the comparison.
-
-
-## v0.5 migration safety
-
-Normal search remains cache-first and uses the conditional X-Byte/browser routing described above. Anonymous HTTP is discovery-only and cannot establish local delivery context. Diagnostic `browser_mode` explicitly selects `auto`, `refresh`, or `cache_only`; frontend comparison requests `refresh`. Inspect `summary.comparability`, `summary.validation.gates`, source/cache status, coverage, and typed errors before comparing latency or prices.
-
-Catalog observations now retain opaque address-context identity. Legacy/contextless or incompatible observations cannot issue selection quotes. Carts spanning different location contexts return `409 mixed_location_context`. Exact persistent cache reads warm memory without renewing expiry.
-
-Authenticated operators can recover a login-paused discovery worker with one bounded read probe against the same ZIP/query/retailer that failed. Run `python operator_recover.py --acknowledge-provider-access` inside the service shell. The command reads the server-local credential without printing it. Legacy pauses without retained job scope return recovery_context_required and require authorized session setup. An unrelated successful search cannot clear the circuit. Screening pauses remain stopped; successful public reads do not authenticate a customer or establish delivery eligibility.
-
-
-### Discovery isolation and provider handoff
-
-A login-required ingestion attempt suspends its ZIP + retailer discovery context across queries. It does not stop other eligible contexts or other providers. The suspension persists across restart and new demand does not clear it. Screening still stops the entire Instacart browser worker. Unknown legacy pauses remain stopped unless an exact failed context can be reconstructed from retained evidence.
-
-Ingestion status includes `blocked_contexts`, `blocked_jobs`, `eligible_jobs` and `work_state` (`scheduled`, `fetching`, `no_eligible_jobs`, `provider_paused`, `stopped`). `running` does not mean every queued job or price is fresh. Operator recovery probes one suspended context's original query and clears only that suspension on success.
-
-For local basket handoff, use each selected item's HTTPS `url`. The tester labels these links **Open on Instacart**. No provider basket transfer or checkout session is created; the customer continues on the provider website.
-
-
-### v0.6 cancellable search
-
-`POST /api/v1/search/jobs` accepts the standard SearchRequest with the same conditional X-Byte/browser routing and returns HTTP 202 with `job_id`, `job_token`, `status=queued`, and `expires_in`. Keep the token in memory. Send `Authorization: Bearer <job_token>` to `GET /api/v1/search/jobs/{id}` and `POST /api/v1/search/jobs/{id}/cancel` with `{}`. Tokens are never placed in URLs. Invalid tokens return 403. Jobs are retained for ten minutes; at most two active and 32 retained jobs are allowed.
-
-Poll status: queued, running, succeeded, failed or cancelled. On succeeded, `result` is the standard search response including `search_id`, so normal selection/cart endpoints apply. On failed/cancelled inspect `error.code` and `error.message`. Cancellation is acknowledged only when terminal status is cancelled. Browser execution is isolated in a child process with a shared deadline; cancellation terminates and reaps its running process tree on Linux. The regular synchronous search API remains supported. A client disconnect alone is not an acknowledged cancellation; clients should call the cancel endpoint. The tester attempts cancellation when leaving the page.
-
-Location responses now carry `provider_context` with request context identity, observed ZIP, acknowledgment, nullable store branch ID, delivery verification and authorized-state configuration. A configured session is not proof of authenticated access or local delivery. Anonymous HTTP remains discovery-only.
-
-Optional authorized provider state: operator supplies `INSTACART_STORAGE_STATE_PATH` pointing to a private owner-readable 0600/0400 Instacart-only Playwright state file. No public endpoint accepts session cookies or credentials. Session changes isolate exact caches and address-specific offers. No session is created by this release. Invalid configuration is reported explicitly. See https://playwright.dev/python/docs/auth .
-
-Pagination follows visible retailer carousel / navigation Next page controls, with four actions by default (`INSTACART_PAGE_ACTION_LIMIT`, bounded 0–12), 500 cards and the request deadline. Diagnostics report actions, new-card counts and stopping reason. These bounded observations do not establish complete inventory. Product fields add `price_basis`, nullable `unit_price`, `promotion_text`, `size_status` and `variants_status`; absent variants remain not_exposed.
-
-Storage v6 keeps normalized product, offer, context and scheduler-job tables with an additive native backup before migration. Legacy rows/snapshots are retained for rollback. API, comparisons and ingestion use the shared search resolver. Hard process cancellation is Linux-specific.
-
-
-## v0.7: browsing and demand-based refresh
-
-The existing search, selection and cart models remain compatible. An optional server-side freshness policy gives each new Instacart snapshot its own five-minute expiry; explicit retailer/ZIP invalidation still expires matching snapshots and quotes. Other providers retain their existing policy.
-
-For a fast browsing screen, first call GET /api/v1/catalog with ZIP/query/provider and display names/images. `last_seen_price` and `price_status` describe a historical observation. Stale or context-incompatible observations must not be selectable. For an address search, a ZIP catalog preview is not proof of delivery or the selected address. Then use the normal search or cancellable job flow to obtain fresh compatible quotes. Never fall back to expired prices for cart validation.
-
-Recent successful auto/refresh searches and current basket selections can enter a bounded demand refresh set. Capacity is computed from measured fetch time and reserves foreground/discovery work. `cache_only` performs no upstream fetch and does not schedule one. No refresh timing or availability is guaranteed across provider failures, login restrictions or overloaded capacity.
-
-Background refresh does not extend or replace an already issued `search_id`. After expiry, call search again and use the new compatible item/search IDs for selection/cart. Existing HTTP 409 `price_expired` remains authoritative. Precise refresh contexts are held only in bounded memory for 15 minutes of inactivity and are lost on restart.
-
-## v0.8.0 local observations and savings acceptance
-
-`GET /api/v1/catalog?zip=63129` excludes unacknowledged or mismatched-ZIP observations by default. `allow_unverified_location=true` explicitly requests historical/discovery observations; those cannot issue local catalog quotes. `context_compatible` now requires observed ZIP acknowledgment, not merely the same requested cache key. Existing rows are retained for reference.
-
-Every newly parsed Instacart product includes `price_basis_verified`, `price_unit`, `price_label`, and `price_unit_evidence`. `per_item` requires an explicit primary `each`/`ea` label or the same product card’s exact `Add 1 ct [product name]` quantity-control label. The latter is returned as `quantity_label` with `price_unit_evidence=quantity_control_label`; the control is read, never clicked. A secondary $/oz label does not establish the main charge basis. Missing basis stays `unspecified`; never assume “each” from a package size. Weighted observations cannot be compared using integer item counts.
-
-Fresh search items also expose `price_fresh`, `price_expires_in`, `age_seconds`, `requested_zip`, `observed_zip`, `location_verified`, `context_id`, `local_offer_eligible`, and `discovery_only`. Old stored observations do not gain unit evidence on upgrade. ZIP acknowledgment does not verify a merchant branch or delivery serviceability.
-
-`POST /api/v1/savings` accepts only server-issued references:
+A request can supply `zip`, `location.postal_code`, or both with the same value. `location.postal_code` can be omitted when top-level `zip` supplies it. `country_code` defaults to `US`. Address `line1`, `city` and `region` must be nonblank strings of at most 200 characters; `line2` is optional, may be empty, and is limited to 100 characters. Coordinates require finite numeric latitude/longitude in their normal ranges. Send an address or coordinates, not both. Acceptance of the input shape does not establish supplier support or location verification.
 
 ```json
-{"offers":[{"search_id":"fresh-search","item_id":"merchant-a-item"},{"search_id":"fresh-search","item_id":"merchant-b-item"}],"quantity":2}
+{
+  "location": {
+    "postal_code": "63129",
+    "country_code": "US",
+    "address": {
+      "line1": "123 Example Lane",
+      "line2": "",
+      "city": "Example City",
+      "region": "MO"
+    }
+  },
+  "queries": ["milk", "eggs"],
+  "retailer": "aldi",
+  "allow_unverified_location": false,
+  "mode": "auto"
+}
 ```
 
-It recomputes merchandise subtotals and savings from server-held prices. It requires two distinct merchants, identical provider product ID/name/size, the same acknowledged opaque location context, explicit matching item charge units, USD, no unvalidated promotions, and unexpired searches. `409` errors include `price_expired`, `location_unverified`, `mixed_location_context`, `product_mismatch`, `price_unit_unverified`, `price_unit_mismatch`, `weighted_quantity_required`, and `conditional_price`. Client-supplied prices are rejected. Revalidate after input changes and at displayed expiry. Taxes, fees, checkout price and delivery coverage remain outside this calculation.
+This is a synthetic shape example. The app supplies its selected address. Do not silently replace it, or retry with `allow_unverified_location=true` after a strict-location error.
 
-### Android acceptance still required
+| Route / mode | Behavior |
+| --- | --- |
+| Shopping `auto` | Read fresh memory/exact persistent snapshots; fetch missing queries. |
+| Shopping `cache_only` | No upstream fetch and no refresh scheduling. May return `partial` or `cache_miss`. |
+| Shopping `refresh` | Ask for a fresh snapshot; concurrent refreshes may coalesce. It does not renew an already issued quote ID. |
+| Synchronous `/search` `live` or `catalog` | Legacy aliases of cache-first `auto`. **They are not stored-only modes on this route.** |
+| `/search/jobs` modes | Only `auto`, `refresh` and `cache_only`; `live`/`catalog` return 422. |
+| `/compare` `catalog` | Retained catalog observations only, including expired data with flags. |
+| `/compare` `cache_only` | Fresh exact snapshots only. |
+| `/compare` `auto` / `live` / `refresh` | Fresh fetches use the browser; shared cached data may have X-Byte provenance. |
 
-On the installed Android build, use the actual delivery address in 63129, run a cancellable fresh search, and retain request IDs. Find the same packaged product at two merchants with explicit primary charge-unit evidence. Call `/api/v1/savings`, compare the displayed quantity/subtotals/savings against the returned decimals, change quantity, and verify recalculation. Wait until the earliest quote expires and verify the savings claim is removed until refresh succeeds. Repeat with a mismatched-ZIP observation, unknown price unit and different package size: none may create a savings claim. Record build number, merchant/product IDs, observed ZIP, price labels, expiry, API result and screenshots. API fixture tests alone do not satisfy this device acceptance.
+## Recommended shopping sequence
+
+1. Optionally read `/api/v1/catalog?zip=63129&queries=milk&queries=eggs` for a stored preview. Repeat `queries`; do not comma-join terms. Matching is OR. Empty results do not prove local unavailability. An address-specific shopping flow should obtain fresh compatible search results before committing selections.
+2. Create a search job, or use synchronous `/api/v1/search`. Decode the HTTP status and then the response `status`.
+3. Render returned product metadata and its freshness/location evidence. Persist selected lines in the app as `search_id`, `item_id` and integer `quantity`. IDs are opaque; do not invent identifiers, reuse an item with a different search ID or infer cross-merchant equivalence from a name.
+4. Optionally call `/api/v1/select` for IDs from one search. It deduplicates repeated IDs and returns a selection subtotal, not a persistent basket. `selection_id` is not needed by cart or savings.
+5. Call `/api/v1/cart` to validate local lines against server-held prices. The app owns persistence and removal. Revalidate after quantity/context changes and before displaying a current subtotal.
+6. Call `/api/v1/savings` only when two referenced offers qualify for its stricter equivalence and charge-unit rules. Use its returned totals and expiry.
+
+### Shopping response variants
+
+| HTTP / `status` | Shape and action |
+| --- | --- |
+| 200 `ok` | `search_id`, `items`, `location`, `cache`, `expires_in`, `cart_updated:false`, `missing_queries:[]`, `partial_errors`, `source_providers`, `coverage_complete:false`, `warnings`, `retailers`, `diagnostics`, `retrieved_at`. Continue with returned references. |
+| 200 `partial` | Same shape, with uncovered `missing_queries`; `partial_errors` may explain why. Display available results and clearly identify missing searches. Do not report that every term succeeded. |
+| 200 `cache_miss` | Only `status`, empty `items`, `missing_queries`, `location` and `cache`. **No `search_id`, top-level `expires_in` or `cart_updated`.** Ask for an explicit normal/refresh search when appropriate. |
+| Non-2xx | Decode `error ?? status`, optional `message`, `items` and `location`. Empty items on an error are not a successful empty search. |
+
+The schema models these variants separately. Do not make a search ID mandatory for every HTTP 200 body. `retrieved_at` is a string; it can be empty for older retained snapshots lacking a timestamp. Cache age and expiry remain authoritative.
+
+### Cancellable jobs and authentication
+
+`POST /api/v1/search/jobs` is public and returns HTTP 202:
+
+```json
+{"job_id":"opaque-job-id","job_token":"opaque-capability","status":"queued","expires_in":600}
+```
+
+The token is disclosed only on creation. Keep it in memory; send it in `Authorization: Bearer <job_token>` to `GET /api/v1/search/jobs/{id}` and `POST /api/v1/search/jobs/{id}/cancel` with exactly `{}`. Do not place it in URLs, analytics or app logs.
+
+Poll at a modest interval, for example one second initially and two to three seconds for longer waits. `queued` and `running` continue; `succeeded`, `failed` and `cancelled` are terminal. Poll/cancel returns HTTP 200 even when the job failed. On `succeeded`, `result` contains the shopping union above, including possible `partial` or `cache_miss`. On failure/cancellation inspect `error.code` and `error.message`.
+
+`created_at`, nullable `started_at` and nullable `finished_at` are **Unix epoch numbers**, not date strings. `result` and `error` are nullable. Jobs are retained for 600 seconds from creation; quote expiry inside the result is shorter and independent. Polling renews neither. Missing/invalid tokens, unknown IDs, expired jobs and jobs lost on restart all return 403 `job_access_denied`, not 404.
+
+Cancellation is asynchronous: its response can still say `running` with `cancel_requested:true`. Keep polling to a terminal state; only `cancelled` confirms cancellation. A completed result can win the race. A network disconnect alone is not an acknowledged cancellation. Two active jobs and 32 retained jobs are allowed; creation is rate-limited even in `cache_only` mode.
+
+## Products, location and catalog eligibility
+
+`price` is a JSON number in USD, not a formatted string. Use a decimal money type in Android. `size`, `image_url`, `url` and `availability` can be null. Use an image placeholder, and show a provider-link action only when a returned usable URL exists. Never manufacture X-Byte images, URLs, stock states or checkout links.
+
+Fresh shopping items already include `price_fresh`, `price_expires_in`, `age_seconds`, `requested_zip`, `observed_zip`, `location_verified`, `context_id`, `local_offer_eligible` and `discovery_only`. Retained older products can lack newer evidence fields. Missing evidence must not be interpreted as verification. Product `provider_context` and location `provider_context` are optional; FoodSpark does not currently provide the nested browser location evidence object.
+
+`location.verified` acknowledges the requested ZIP/context for these observations. It does not verify a merchant branch, local stock or delivery serviceability. `observed_zip` can be null or different from the request. `context_id` is an opaque identity; compare it exactly, without deriving it from an address. `address_selected` does not upgrade `verification_scope:zip_only` into a delivery guarantee. `store_branch_verified` and `delivery_serviceability_verified` currently remain false.
+
+Catalog and export use `provider=instacart` by default or `all` for the allowed namespace only. Without `zip`, `location.requested_zip` is null. With a ZIP, mismatched/unacknowledged observations are excluded unless the exact query-string value `allow_unverified_location=true` is supplied. `excluded_unverified_observations` explains withheld rows. Query values are limited to the first three and truncated to 120 characters by the catalog handler.
+
+An expired catalog item's numeric `price` remains historical; it is **not automatically erased or changed to null**. `last_seen_price`, `price_status`, `price_fresh`, `age_seconds` and `last_seen` describe its history. Only `selectable:true` catalog items are included in the server snapshot behind the returned catalog `search_id`. A response with no selectable items still has a display ID but cannot validate selections. `local_offer_eligible` additionally requires verified primary charge-unit evidence; catalog `selectable` alone does not establish savings eligibility.
+
+Catalog metadata includes nullable `brand`, `provider_location_id` and `fulfillment`, opaque `catalog_key` and `product_key`, and boolean `context_compatible`, `branch_verified` and `delivery_verified`. Do not replace item IDs with storage keys. The catalog is bounded discovery data, not complete inventory.
+
+## Selection, cart and savings
+
+Selection request:
+
+```json
+{"search_id":"returned-search-id","item_ids":["returned-item-id"]}
+```
+
+Selection supports 1–60 IDs, deduplicates them and rejects IDs absent from that search. A missing, expired or restarted search returns 404 `search_expired`. A valid selection response includes `selection_id`, items, `subtotal`, `currency:"USD"`, location, a message and `cart_updated:false`.
+
+Cart request:
+
+```json
+{"lines":[{"search_id":"returned-search-id","item_id":"returned-item-id","quantity":2}]}
+```
+
+Cart supports up to 60 distinct `(search_id,item_id)` pairs with quantity 1–99. `{}` and `{"lines":[]}` both validate an empty cart. The response includes items with `quantity`, `line_total`, `search_id` and `location_verified`; `item_count` is the sum of quantities. Both `cart_updated` and `provider_cart_updated` are false. The endpoint validates a local subtotal; it neither persists a server cart nor transfers a provider basket. Different opaque contexts return 409 `mixed_location_context`; invalid/expired references return 409 `price_expired`.
+
+Savings request:
+
+```json
+{"offers":[{"search_id":"fresh-search-a","item_id":"merchant-a-item"},{"search_id":"fresh-search-b","item_id":"merchant-b-item"}],"quantity":2}
+```
+
+Supply exactly two references and optional integer `quantity` (default 1, range 1–99). No client prices or extra fields are accepted. Both searches must remain unexpired and acknowledge the same opaque location context/ZIP. Merchants must differ. The implementation requires the same Instacart product identity in the HTTPS product URL, matching product name and package size, USD, matching explicitly verified primary charge units, `price_basis:per_item`, and no unvalidated promotion. The legacy provider namespace must be `instacart`. Current FoodSpark products have `price_basis:unspecified`, `price_basis_verified:false` and no product URL; that payload does not qualify for this savings calculation even when the address is acknowledged.
+
+A successful response contains **all** these fields:
+
+- `status:"verified_observation_comparison"`, UTC `compared_at`, and the two `offers` in input order, each with its `search_id`.
+- `quantity`, `currency:"USD"`, `original_subtotal` (higher observed unit price × quantity), `replacement_subtotal` (lower observed unit price × quantity), `savings` and `savings_percent`. Input order does not choose the higher/lower role. Amounts and percent are rounded to two decimals; zero original subtotal produces zero percent.
+- `lower_price_merchant`, `higher_price_merchant`, `expires_in` (the earlier reference expiry), `location` and `scope`.
+
+The comparison covers observed merchandise prices only; taxes, fees, delivery and checkout verification are outside its scope. Remove the savings claim at expiry or after product, quantity or location changes until a new calculation succeeds. Unknown offers/malformed bodies return 422 `invalid_request`. Eligibility failures return 409 with one of:
+
+`price_expired`, `location_unverified`, `price_unit_unverified`, `conditional_price`, `provider_unsupported`, `mixed_location_context`, `different_merchants_required`, `product_mismatch`, `price_unit_mismatch`, `weighted_quantity_required`.
+
+## Errors, deadlines and retries
+
+| HTTP | Routes / codes | App behavior |
+| --- | --- | --- |
+| 403 | Job `job_access_denied`; operator `operator_required`; live supplier-test auth errors | Obtain/use the correct existing capability for that route. A job cannot be recovered by guessing an ID. |
+| 404 | Selection `search_expired` | Run a new search and use its new references. |
+| 409 | Cart/savings eligibility; cancelled search; recovery state | Read the code and fix the relevant context, quote or operation. Do not retry expired references unchanged. |
+| 410 | Compare/catalog/export `provider_removed` | Remove retired provider choices and stop retries. |
+| 422 | `invalid_request`, catalog `invalid_provider`, search `location_required` / `location_unsupported` | Correct request shape or surface the supplier/location limitation. Do not enable unverified results silently. |
+| 429 | `busy` / `rate_limited` | Back off with jitter. Suggested app policy: 5, 15, 30 seconds, at most three retries. |
+| 502 | `provider_timeout`, `provider_blocked`, `login_required`, `provider_quota`, `no_results`, `provider_context_changed`, `connector_error` | Preserve the failure and its request ID; no alternate supplier/data is substituted. Stop automatic retries on login/screening restrictions. |
+| 503 | Search `connector_disabled`; readiness `not_ready` | Surface temporary service unavailability. |
+
+One provider search occupies the shared foreground slot. Synchronous fresh searches are limited to three per minute per source IP; several app users behind one backend can share it. Fresh job creation has its own capacity constraints and also consumes the per-IP creation limit. A single synchronous request with up to three terms is one request for this limit. Catalog reads are not a promise that a subsequent live request will succeed.
+
+Foreground queue waits are bounded to 15 seconds normally or 65 seconds for coalesced refresh, within a shared 120-second request/job budget. Use a configurable read timeout that accommodates that budget and transport overhead. `provider_timeout` now reports shared deadline expiry explicitly instead of a generic connector failure or dropped connection. Do not overlap abandoned searches; cancel jobs when leaving their screen.
+
+## Persistence and operations
+
+Prices expire within 300 seconds without sliding renewal. `cache.hit`, `partial_hit`, `hit_queries`, `fetched_queries`, `sources`, `age_seconds`, `expires_in` and `ttl_seconds` describe returned snapshots. Background refresh can prepare a new snapshot but never extends a previously issued `search_id`. At expiry, fetch again and use new references.
+
+The deployed Docker service uses SQLite on its configured persistent disk. Exact snapshots, descriptions and scheduler state can survive process restart, with their original expiry. Shopping quote IDs and jobs/tokens and precise demand-refresh contexts are process-local and can disappear earlier than their advertised lifetime on restart. Persistent storage does not turn expired data into current prices. The status endpoint exposes whether a persistent mount is configured.
+
+| Endpoint | Authentication / meaning |
+| --- | --- |
+| `GET /health` | Public liveness, loaded contract version and freshness-policy flag. No supplier probe. |
+| `GET /ready` | Public SQLite access check; 200 `ready` with storage flags or 503 `not_ready`. No supplier probe. |
+| `GET /api/v1/providers/status` | Public routing/session configuration and recent comparison activity. `activity[].at` is epoch seconds; `activity[].cache_hit` is integer **0/1**, not a boolean. |
+| `GET /api/v1/ingestion/status` | Public worker diagnostics. `offset` defaults 0, clamped nonnegative; `limit` defaults 50, clamped 1–100. Invalid numeric text returns 422. Disabled worker returns only `enabled:false` and `catalog`. |
+| `POST /api/v1/ingestion/recover` | Requires server-local `OperatorBearer` and exactly `{"acknowledge":true}`. Numeric `1` is rejected. 200 is `already_running` or `recovered`; 403 auth failure; 409 disabled worker or provider recovery failure. |
+| `POST /api/v1/cache/invalidate` | Currently public prototype maintenance endpoint, rate-limited once per retailer/ZIP group per minute. Takes retailer slug or `*`, plus optional ZIP; omitted or null ZIP means every ZIP. Not a normal APK search step. |
+
+Normal shopping/search/select/cart/savings and public status routes currently require no application bearer token. Do not invent a shared API credential or embed supplier/operator/test secrets in the APK. Job capabilities, operator recovery credentials and isolated live-test credentials are different credentials with different scopes.
+
+Enabled ingestion status exposes queue/pagination, nullable active query/last error/pause/circuit/heartbeat, scheduler tiers, admitted refresh capacity, resources and catalog counts. Queue/job/activity timestamps are numeric epoch seconds; product `last_seen`, comparison `compared_at` and savings `compared_at` are UTC strings. `running:true` does not mean every job or price is fresh. `work_state` is one of `scheduled`, `fetching`, `no_eligible_jobs`, `provider_paused` or `stopped`.
+
+A login-required browser discovery context is suspended by ZIP/retailer. Other eligible contexts can continue; screening pauses the browser worker. Recovery uses one bounded probe of the retained failed context. An unrelated success does not clear a pause. Use the existing server-side recovery tool; never ship its credential to the APK.
+
+## Comparison and diagnostics are separate from shopping
+
+`POST /api/v1/compare` defaults to `providers:["instacart"]` and `mode:"catalog"`. HTTP 200 means the comparison envelope completed; inspect each `providers[].status` and `providers[].error`. Per-provider states are `ok`, `empty`, `error`, `partial`, `cached` and `not_cached`. All comparison items have `selectable:false`, retain source provenance and cannot be used as shopping quotes. Use provider-test routes for explicit X-Byte/Northfork testing, not retired comparator names.
+
+`POST /api/v1/diagnostics/http-compare` accepts exactly one distinct query and returns either `status:compared` with both branches and a typed summary, or `status:provider_blocked` with `browser:null` when direct screening stops the comparison. **The direct anonymous HTTP request runs even when `browser_mode:cache_only`.** That mode controls only the browser branch. Direct HTML has no established local delivery context, creates no shopping quote and does not alter normal search routing. Diagnostic parity gates do not approve a production rollout.
+
+## Android acceptance
+
+Use the current APK branch/build and its existing networking/image libraries. Decode nullable/optional fields, every shopping status, job capabilities, expiry and provenance before relying on live inventory. Exercise partial and cache-miss results, job cancellation/expiry, null images/URLs, restarted search IDs, mixed-context carts, retired providers and every savings rejection path with controlled fixtures.
+
+Device acceptance also needs a real authorized supplier response for the app's selected location and a qualifying pair of offers before claiming live local savings. Contract/fixture success proves parsing and guardrails, not supplier availability or delivery coverage. Record the APK build, request IDs, source transport, observed location, price-unit evidence, expiry and screenshots; retain the precise provider error when real data fails.

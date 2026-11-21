@@ -28,16 +28,20 @@ def search_live(zip_code, queries, retailer, allow, browser_search):
                 'items': [{**item, 'source_provider': 'instacart_browser'}
                           for item in payload['items']]}
 
+    # Suppliers can acknowledge the street (including unit) or the complete
+    # address we sent. Accept only those exact contexts, ignoring case/spacing.
+    normalize_address = lambda value: ' '.join(str(value or '').split()).casefold()
+    street_address = ', '.join(filter(None, (address['line1'], address.get('line2'))))
+    full_address = ', '.join((street_address, address['city'], address['region'] + ' ' + zip_code))
+    expected_addresses = {normalize_address(street_address), normalize_address(full_address)}
+
     items = {}
     for query in queries:
         params = {
             'country': 'usa', 'platform': 'web', 'domain': 'instacart',
             'endpoint_type': 'dl295_search_by_addr_brand_slug_and_keyword',
             'brand_slug': retailer, 'search_term': query, 'zipcode': zip_code,
-            'address': ', '.join(filter(None, (
-                address['line1'], address.get('line2'), address['city'],
-                address['region'] + ' ' + zip_code,
-            ))),
+            'address': full_address,
             'api_key': key,
         }
         request = Request('https://foodsparkfastapiframework.xbyte.io/search?' + urlencode(params))
@@ -60,10 +64,16 @@ def search_live(zip_code, queries, retailer, allow, browser_search):
         except (OSError, ValueError, KeyError, TypeError):
             raise ConnectorError('connector_error', 'FoodSpark did not return a valid search result.') from None
 
-        if (str(store.get('Delivery Zip Code')) != zip_code
-                or store.get('Store Slug') != retailer
-                or str(store.get('Delivery Address', '')).strip().casefold() != address['line1'].casefold()):
-            raise ConnectorError('location_unsupported', 'FoodSpark did not confirm the requested retailer and address.')
+        mismatches = []
+        if str(store.get('Delivery Zip Code')) != zip_code:
+            mismatches.append('ZIP')
+        if store.get('Store Slug') != retailer:
+            mismatches.append('retailer')
+        if normalize_address(store.get('Delivery Address')) not in expected_addresses:
+            mismatches.append('street address')
+        if mismatches:
+            # Report field names only, never supplier payloads or address values.
+            raise ConnectorError('location_unsupported', 'FoodSpark did not confirm the requested ' + ', '.join(mismatches) + '.')
 
         for row in rows:
             if not isinstance(row, dict):
