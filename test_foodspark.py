@@ -108,6 +108,43 @@ class FoodSparkRoutingTests(unittest.TestCase):
             with self.assertRaises(ConnectorError) as error:
                 foodspark.search_live('63129', ['milk'], 'aldi', False, self.browser)
         self.assertEqual(error.exception.status, 'location_unsupported')
+        self.assertEqual(error.exception.message, 'FoodSpark did not confirm the requested ZIP.')
+        self.browser.assert_not_called()
+
+    def test_full_address_acknowledgment_accepts_case_and_spacing_only(self):
+        self.raw['response']['store_details']['Delivery Address'] = ' 100 TEST STREET,   TEST CITY, MO 63129 '
+        with patch.dict(os.environ, {'FOODSPARK_API_KEY': 'synthetic-xbyte-key'}), \
+                patch.object(foodspark, 'build_opener') as factory:
+            factory.return_value.open.side_effect = self.response
+            result = foodspark.search_live('63129', ['milk'], 'aldi', False, self.browser)
+        self.assertTrue(result['location']['verified'])
+        self.assertEqual(result['items'][0]['source_provider'], 'xbyte_foodspark')
+        self.browser.assert_not_called()
+
+    def test_unit_must_be_acknowledged_in_street_or_full_address(self):
+        self.location['address']['line2'] = 'Unit 2'
+        set_location(deepcopy(self.location))
+        accepted = ('100 Test Street, Unit 2', '100 Test Street, Unit 2, Test City, MO 63129')
+        rejected = ('100 Test Street', '100 Test Street, Unit 3',
+                    '100 Test Street, Unit 2, Other City, MO 63129',
+                    '100 Test Street, Unit 2, Test City, MO 10001',
+                    '101 Test Street, Unit 2, Test City, MO 63129')
+        with patch.dict(os.environ, {'FOODSPARK_API_KEY': 'synthetic-xbyte-key'}), \
+                patch.object(foodspark, 'build_opener') as factory:
+            factory.return_value.open.side_effect = self.response
+            for echoed_address in accepted:
+                with self.subTest(address=echoed_address):
+                    self.raw['response']['store_details']['Delivery Address'] = echoed_address
+                    result = foodspark.search_live('63129', ['milk'], 'aldi', False, self.browser)
+                    self.assertTrue(result['location']['verified'])
+            for echoed_address in rejected:
+                with self.subTest(address=echoed_address):
+                    self.raw['response']['store_details']['Delivery Address'] = echoed_address
+                    with self.assertRaises(ConnectorError) as error:
+                        foodspark.search_live('63129', ['milk'], 'aldi', False, self.browser)
+                    self.assertEqual(error.exception.status, 'location_unsupported')
+                    self.assertEqual(error.exception.message, 'FoodSpark did not confirm the requested street address.')
+                    self.assertNotIn(echoed_address, error.exception.message)
         self.browser.assert_not_called()
 
     def test_xbyte_identity_is_stable_and_remains_scoped_to_returned_store(self):

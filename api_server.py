@@ -170,7 +170,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path=='/api/v1/ingestion/recover':
                 supplied=self.headers.get('Authorization','')
                 if not hmac.compare_digest(supplied,'Bearer '+OPERATOR_KEY):return self.send(403,{'error':'operator_required','message':'Authenticated operator access required.'})
-                if data!={'acknowledge':True}:raise ValueError('Explicit acknowledgment required.')
+                if set(data)!={'acknowledge'} or data['acknowledge'] is not True:raise ValueError('Explicit boolean acknowledgment required.')
                 if not INGESTOR:return self.send(409,{'error':'worker_disabled'})
                 try:return self.send(200,INGESTOR.recover())
                 except ConnectorError as e:return self.send(409,{'status':e.status,'message':e.message})
@@ -284,10 +284,14 @@ class Handler(BaseHTTPRequestHandler):
                 emit('search_failed',provider='instacart',status=e.status)
                 code=429 if e.status in ('busy','rate_limited') else 422 if e.status in ('location_required','location_unsupported') else 409 if e.status=='cancelled' else 502
                 return self.send(code,{'status':e.status,'error':e.status,'message':e.message,'items':[],'location':{'requested_zip':z,'verified':False}})
+            except deadline.DeadlineExceeded:
+                emit('search_failed',provider='instacart',status='provider_timeout')
+                return self.send(502,{'status':'provider_timeout','error':'provider_timeout','message':'Search reached the request time limit.','items':[],'location':{'requested_zip':z,'verified':False}})
             except Exception as e:
                 emit('search_failed',provider='instacart',error_type=type(e).__name__)
                 return self.send(502,{'status':'connector_error','message':'The browser connector failed. No product results were substituted.','items':[]})
         except cancellation.CancelledError:return self.send(409,{'status':'cancelled','message':'Search cancelled.'})
+        except deadline.DeadlineExceeded:return self.send(502,{'status':'provider_timeout','error':'provider_timeout','message':'Request reached its time limit.'})
         except (ValueError,TypeError): return self.send(422,{'error':'invalid_request','message':'Use a five-digit zip and 1–3 food queries. See /openapi.json.'})
 
 if __name__=='__main__':

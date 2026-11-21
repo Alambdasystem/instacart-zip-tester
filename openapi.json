@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "InstaSearch API Contract",
-    "version": "0.10.0",
-    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. Local baskets and provider links do not transfer items or place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels. Optional v0.7 freshness scheduling preserves five-minute quote expiry. Catalog descriptions remain browsable with expired prices explicitly labeled; background refresh never renews an existing search_id. Cache-only never schedules refresh. Provider tests add isolated, explicitly selected X-Byte/FoodSpark and Northfork reads plus synthetic Actowiz schema fixtures. They never fall back or issue shopping quotes. Live tests require a dedicated token, enable flag and separate persistent read allowance. MealMe/Satsuma and the Vercel Kroger/Square adapters are retired. Normal shopping search prefers X-Byte/FoodSpark only with configured server access, a retailer slug and a full address; otherwise it uses browser discovery. X-Byte errors never trigger fallback. Legacy comparison fetches through the browser but can reuse cached X-Byte observations with their original source provenance. Catalog all excludes retired sources. Explicit retired-provider selections return HTTP 410 provider_removed."
+    "version": "0.10.1",
+    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. Local baskets and provider links do not transfer items or place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels. Optional v0.7 freshness scheduling preserves five-minute quote expiry. Catalog descriptions remain browsable with expired prices explicitly labeled; background refresh never renews an existing search_id. Cache-only never schedules refresh. Provider tests add isolated, explicitly selected X-Byte/FoodSpark and Northfork reads plus synthetic Actowiz schema fixtures. They never fall back or issue shopping quotes. Live tests require a dedicated token, enable flag and separate persistent read allowance. MealMe/Satsuma and the Vercel Kroger/Square adapters are retired. Normal shopping search prefers X-Byte/FoodSpark only with configured server access, a retailer slug and a full address; otherwise it uses browser discovery. X-Byte errors never trigger fallback. Legacy comparison fetches through the browser but can reuse cached X-Byte observations with their original source provenance. Catalog all excludes retired sources. Explicit retired-provider selections return HTTP 410 provider_removed. Version 0.10.1 explicitly documents existing partial/cache-miss/job/savings and operational envelopes without changing their wire field types. /health is liveness; /ready checks storage only."
   },
   "servers": [
     {
@@ -53,7 +53,7 @@
             }
           },
           "422": {
-            "description": "Invalid request or location_required",
+            "description": "invalid_request: malformed input; location_required or location_unsupported: the selected supplier could not establish or support the requested location. No automatic relaxation or supplier fallback.",
             "content": {
               "application/json": {
                 "schema": {
@@ -73,7 +73,7 @@
             }
           },
           "502": {
-            "description": "Provider failure; inspect status",
+            "description": "Provider failure, including provider_timeout, provider_blocked, login_required, provider_quota, no_results, provider_context_changed or connector_error. No substitute provider/data is returned.",
             "content": {
               "application/json": {
                 "schema": {
@@ -84,6 +84,16 @@
           },
           "503": {
             "description": "Connector disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "cancelled: explicit search cancellation; do not treat as an empty successful search.",
             "content": {
               "application/json": {
                 "schema": {
@@ -112,7 +122,8 @@
             }
           }
         },
-        "description": "Uses X-Byte/FoodSpark when server access, retailer and full location.address are present; otherwise uses the existing Instacart browser. A provider failure does not trigger fallback. Fresh cache reads retain their original provenance."
+        "description": "One to three nonblank query strings, maximum 120 characters each; duplicates are trimmed/deduplicated. queries takes precedence over query. A five-digit ZIP is required through zip or location.postal_code. With configured key + retailer + full address, new shopping fetches use X-Byte/FoodSpark; otherwise the browser. No fallback after an X-Byte error. Request bodies are 1\u201310000 UTF-8 JSON bytes. Decode all HTTP 200 variants by status. Both search routes require CONNECTOR_ENABLED on the server; clients do not supply supplier credentials.",
+        "security": []
       }
     },
     "/api/v1/catalog": {
@@ -134,7 +145,14 @@
             }
           },
           "422": {
-            "description": "Invalid request or unsupported provider selection."
+            "description": "invalid_request (invalid ZIP) or invalid_provider (unknown, non-retired provider).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "410": {
             "description": "provider_removed: the selected provider is retired; no upstream request is sent.",
@@ -174,7 +192,7 @@
               "milk",
               "eggs"
             ],
-            "description": "Repeat queries=milk&queries=eggs. Matches any term."
+            "description": "Repeated queries=milk&queries=eggs, OR matching. The handler uses the first three values and truncates each to 120 characters; omission allows all stored products."
           },
           {
             "name": "query",
@@ -198,7 +216,8 @@
             "schema": {
               "type": "boolean",
               "default": false
-            }
+            },
+            "description": "Only the exact query-string value true opts into unacknowledged/mismatched-ZIP observations; all other values are treated as false."
           },
           {
             "name": "provider",
@@ -212,7 +231,8 @@
             },
             "description": "Supported catalog namespace. all includes allowed sources only and excludes retired-provider records. The legacy instacart namespace may include FoodSpark observations; inspect item provenance."
           }
-        ]
+        ],
+        "security": []
       }
     },
     "/api/v1/select": {
@@ -234,7 +254,7 @@
             }
           },
           "404": {
-            "description": "Search snapshot expired",
+            "description": "search_expired: missing, unknown, expired or process-restarted search reference.",
             "content": {
               "application/json": {
                 "schema": {
@@ -269,7 +289,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/v1/cart": {
@@ -291,7 +312,7 @@
             }
           },
           "409": {
-            "description": "Price expired; search again",
+            "description": "price_expired: unknown/expired search reference; mixed_location_context: cart references span different opaque contexts.",
             "content": {
               "application/json": {
                 "schema": {
@@ -329,7 +350,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/v1/cache/invalidate": {
@@ -384,7 +406,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/v1/catalog/export": {
@@ -406,7 +429,14 @@
             }
           },
           "422": {
-            "description": "Invalid request or unsupported provider selection."
+            "description": "invalid_request (invalid ZIP) or invalid_provider (unknown, non-retired provider).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "410": {
             "description": "provider_removed: the selected provider is retired; no upstream request is sent.",
@@ -446,7 +476,7 @@
               "milk",
               "eggs"
             ],
-            "description": "Repeat queries=milk&queries=eggs. Matches any term."
+            "description": "Repeated queries=milk&queries=eggs, OR matching. The handler uses the first three values and truncates each to 120 characters; omission allows all stored products."
           },
           {
             "name": "query",
@@ -470,7 +500,8 @@
             "schema": {
               "type": "boolean",
               "default": false
-            }
+            },
+            "description": "Only the exact query-string value true opts into unacknowledged/mismatched-ZIP observations; all other values are treated as false."
           },
           {
             "name": "provider",
@@ -484,7 +515,8 @@
             },
             "description": "Supported catalog namespace. all includes allowed sources only and excludes retired-provider records. The legacy instacart namespace may include FoodSpark observations; inspect item provenance."
           }
-        ]
+        ],
+        "security": []
       }
     },
     "/api/v1/ingestion/status": {
@@ -504,8 +536,39 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "invalid_request: pagination cannot be parsed as integers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            },
+            "description": "Clamped to zero or greater."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 50
+            },
+            "description": "Clamped to 1\u2013100."
+          }
+        ],
+        "security": []
       }
     },
     "/health": {
@@ -526,7 +589,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/v1/compare": {
@@ -537,84 +601,17 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "required": [
-                  "queries"
-                ],
-                "properties": {
-                  "zip": {
-                    "type": "string",
-                    "pattern": "^[0-9]{5}$"
-                  },
-                  "queries": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 3,
-                    "items": {
-                      "type": "string"
-                    }
-                  },
-                  "mode": {
-                    "enum": [
-                      "catalog",
-                      "live",
-                      "auto",
-                      "cache_only",
-                      "refresh"
-                    ],
-                    "default": "catalog"
-                  },
-                  "providers": {
-                    "type": "array",
-                    "items": {
-                      "enum": [
-                        "instacart"
-                      ]
-                    },
-                    "default": [
-                      "instacart"
-                    ],
-                    "minItems": 1,
-                    "maxItems": 4
-                  },
-                  "retailer": {
-                    "type": "string",
-                    "pattern": "^([a-z0-9][a-z0-9-]{0,63})?$",
-                    "default": "",
-                    "description": "Empty discovers visible retailers; otherwise use a returned retailer id."
-                  },
-                  "allow_unverified_location": {
-                    "type": "boolean",
-                    "default": false
-                  },
-                  "location": {
-                    "$ref": "#/components/schemas/LocationInput"
-                  }
-                },
-                "anyOf": [
-                  {
-                    "required": [
-                      "zip"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "location"
-                    ]
-                  }
-                ],
-                "additionalProperties": false
+                "$ref": "#/components/schemas/ComparisonRequest"
               },
               "example": {
-                "zip": "63110",
+                "zip": "63129",
                 "queries": [
                   "milk"
                 ],
                 "providers": [
                   "instacart"
                 ],
-                "mode": "catalog",
-                "allow_unverified_location": true
+                "mode": "catalog"
               }
             }
           }
@@ -631,10 +628,24 @@
             }
           },
           "429": {
-            "description": "Comparison rate limited"
+            "description": "rate_limited: three live comparisons per minute per source IP. catalog/cache_only are exempt.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "422": {
-            "description": "Invalid request or unsupported provider selection."
+            "description": "invalid_request: malformed search or unknown comparison provider; retired names instead return 410 provider_removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "410": {
             "description": "provider_removed: the selected provider is retired; no upstream request is sent.",
@@ -647,7 +658,8 @@
             }
           }
         },
-        "description": "This compatibility route accepts only the instacart catalog namespace. Fresh fetches use the Instacart browser, while cached observations can originate from X-Byte and retain their source_provider. For explicit fresh X-Byte or Northfork reads use /api/v1/provider-tests/compare. Retired selections return HTTP 410 provider_removed before upstream work. No automatic supplier fallback occurs."
+        "description": "This compatibility route accepts only the instacart catalog namespace. Fresh fetches use the Instacart browser, while cached observations can originate from X-Byte and retain their source_provider. For explicit fresh X-Byte or Northfork reads use /api/v1/provider-tests/compare. Retired selections return HTTP 410 provider_removed before upstream work. No automatic supplier fallback occurs.",
+        "security": []
       }
     },
     "/api/v1/providers/status": {
@@ -655,16 +667,24 @@
         "summary": "Sanitized active-provider status, routing policy and activity",
         "responses": {
           "200": {
-            "description": "No credentials or raw upstream payloads"
+            "description": "Routing/configuration and up to 50 recent active comparison records. No provider call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderStatus"
+                }
+              }
+            }
           }
         },
-        "description": "Routing reports conditional X-Byte preference, configuration and required retailer/address inputs, browser discovery for other requests, no fallback on primary failure, and separate browser comparison/background routes. Configuration is not proof of upstream success. No credentials are returned."
+        "description": "Routing reports conditional X-Byte preference, configuration and required retailer/address inputs, browser discovery for other requests, no fallback on primary failure, and separate browser comparison/background routes. Configuration is not proof of upstream success. No credentials are returned.",
+        "security": []
       }
     },
     "/api/v1/diagnostics/http-compare": {
       "post": {
         "summary": "Compare direct public HTML and browser retrieval without changing normal search",
-        "description": "One query. Choose browser_mode explicitly: refresh for a live/cold comparison, auto for cache-first or cache_only. Direct HTTP remains anonymous discovery with no established address. The response reports comparability, gate results, cache hit and errors; normal search transport is unchanged.",
+        "description": "Exactly one query after deduplication. The direct branch always attempts a public HTTP read; browser_mode=cache_only is not a no-upstream option for the whole endpoint. Does not create shopping quotes.",
         "requestBody": {
           "required": true,
           "content": {
@@ -685,15 +705,47 @@
         },
         "responses": {
           "200": {
-            "description": "Independent direct HTTP/browser results, summary and overlap; not interchangeable local offers"
+            "description": "Independent diagnostic outcomes; provider_blocked stops before browser work. No selectable quote.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpComparisonResponse"
+                }
+              }
+            }
           },
           "422": {
-            "description": "Invalid request"
+            "description": "invalid_request: malformed request, browser mode or more than one distinct query.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "429": {
-            "description": "Rate limited"
+            "description": "rate_limited: three diagnostic/live requests per minute.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "provider_timeout: shared request deadline exceeded. No automatic supplier fallback.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/v1/ingestion/recover": {
@@ -729,35 +781,76 @@
         },
         "responses": {
           "200": {
-            "description": "The paused-job public-read probe succeeded; worker resumed"
+            "description": "No pause required recovery, or one bounded original-context recovery probe succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestionRecovery"
+                }
+              }
+            }
           },
           "403": {
-            "description": "Operator credential required"
+            "description": "operator_required: missing/invalid server-local operator bearer credential.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "409": {
-            "description": "Probe failed, worker disabled or screening remains paused"
+            "description": "worker_disabled or connector status such as recovery_context_required, busy, no_results, login_required or provider_blocked. Existing error OR status envelope is preserved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "invalid_request: body must contain only literal boolean acknowledge:true; numeric 1 is rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "provider_timeout: shared request deadline exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
     },
     "/api/v1/search/jobs": {
       "post": {
-        "summary": "Start a cancellable Instacart browser search",
+        "summary": "Start a cancellable shopping search using conditional X-Byte/browser routing",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SearchRequest"
+                "$ref": "#/components/schemas/SearchJobRequest"
               },
               "example": {
                 "zip": "63129",
                 "queries": [
-                  "milk",
-                  "eggs"
+                  "milk"
                 ],
                 "retailer": "",
-                "allow_unverified_location": false
+                "allow_unverified_location": false,
+                "mode": "auto"
               }
             }
           }
@@ -774,9 +867,37 @@
             }
           },
           "429": {
-            "description": "Capacity or rate limit"
+            "description": "busy: two active or 32 retained jobs occupied; rate_limited: three creations per minute per source IP, including cache_only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "invalid_request: malformed location/query/mode; invalid_provider: providers field is not accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "connector_disabled: normal search connector gate is off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/v1/search/jobs/{id}": {
@@ -809,9 +930,17 @@
             }
           },
           "403": {
-            "description": "Invalid or expired job token"
+            "description": "job_access_denied: missing/invalid token, unknown job or expired job. Missing/expired IDs deliberately use 403, not 404.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
-        }
+        },
+        "description": "Send the exact job_token as Authorization: Bearer <job_token>. Never put tokens in URLs. Jobs expire 600 seconds after creation and are process-local; polling does not renew job or quote expiry."
       }
     },
     "/api/v1/search/jobs/{id}/cancel": {
@@ -844,7 +973,24 @@
             }
           },
           "403": {
-            "description": "Invalid or expired job token"
+            "description": "job_access_denied: missing/invalid token, unknown job or expired job. Missing/expired IDs deliberately use 403, not 404.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "invalid_request: cancel body must be exactly {}. Cancellation is asynchronous; keep polling until a terminal state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         },
         "requestBody": {
@@ -858,7 +1004,8 @@
               "example": {}
             }
           }
-        }
+        },
+        "description": "Send the exact job_token as Authorization: Bearer <job_token>. Never put tokens in URLs. Jobs expire 600 seconds after creation and are process-local; polling does not renew job or quote expiry."
       }
     },
     "/api/v1/savings": {
@@ -870,49 +1017,16 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "required": [
-                  "offers"
-                ],
-                "additionalProperties": false,
-                "properties": {
-                  "offers": {
-                    "type": "array",
-                    "minItems": 2,
-                    "maxItems": 2,
-                    "items": {
-                      "type": "object",
-                      "required": [
-                        "search_id",
-                        "item_id"
-                      ],
-                      "additionalProperties": false,
-                      "properties": {
-                        "search_id": {
-                          "type": "string"
-                        },
-                        "item_id": {
-                          "type": "string"
-                        }
-                      }
-                    }
-                  },
-                  "quantity": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 99,
-                    "default": 1
-                  }
-                }
+                "$ref": "#/components/schemas/SavingsRequest"
               },
               "example": {
                 "offers": [
                   {
-                    "search_id": "fresh-search",
+                    "search_id": "search-a",
                     "item_id": "merchant-a-item"
                   },
                   {
-                    "search_id": "fresh-search",
+                    "search_id": "search-b",
                     "item_id": "merchant-b-item"
                   }
                 ],
@@ -923,46 +1037,37 @@
         },
         "responses": {
           "200": {
-            "description": "Fresh equivalent observed merchandise prices; excludes fees and checkout validation.",
+            "description": "Verified observation comparison from two qualifying server-held references.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "required": [
-                    "status",
-                    "savings",
-                    "original_subtotal",
-                    "replacement_subtotal",
-                    "expires_in"
-                  ],
-                  "properties": {
-                    "status": {
-                      "type": "string"
-                    },
-                    "savings": {
-                      "type": "number"
-                    },
-                    "original_subtotal": {
-                      "type": "number"
-                    },
-                    "replacement_subtotal": {
-                      "type": "number"
-                    },
-                    "expires_in": {
-                      "type": "integer"
-                    }
-                  }
+                  "$ref": "#/components/schemas/SavingsResponse"
                 }
               }
             }
           },
           "409": {
-            "description": "Expired, mismatched, conditional, or unverified offers."
+            "description": "References are expired or fail location/product/unit/merchant/promotion eligibility. Do not present a savings claim.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavingsConflict"
+                }
+              }
+            }
           },
           "422": {
-            "description": "Invalid references or quantity."
+            "description": "invalid_request: malformed request, unknown offer, non-integer quantity, invalid money or client-supplied fields. No client price is trusted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/v1/provider-tests/status": {
@@ -983,7 +1088,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/v1/provider-tests/search": {
@@ -1465,6 +1571,219 @@
           }
         }
       }
+    },
+    "/ready": {
+      "get": {
+        "operationId": "getReadiness",
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Check SQLite storage readiness without contacting suppliers",
+        "responses": {
+          "200": {
+            "description": "Storage check completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Storage access failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotReady"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/": {
+      "get": {
+        "tags": [
+          "Documentation"
+        ],
+        "summary": "API workbench",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "API workbench",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/provider-lab": {
+      "get": {
+        "tags": [
+          "Documentation"
+        ],
+        "summary": "Isolated supplier test lab",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Isolated supplier test lab",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs": {
+      "get": {
+        "tags": [
+          "Documentation"
+        ],
+        "summary": "Interactive OpenAPI documentation",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Interactive OpenAPI documentation",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/swagger": {
+      "get": {
+        "tags": [
+          "Documentation"
+        ],
+        "summary": "Interactive OpenAPI documentation alias",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Interactive OpenAPI documentation alias",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/android-contract.md": {
+      "get": {
+        "tags": [
+          "Documentation"
+        ],
+        "summary": "Android integration contract",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Android integration contract",
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/instasearch-contract.md": {
+      "get": {
+        "tags": [
+          "Documentation"
+        ],
+        "summary": "Android integration contract alias",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Android integration contract alias",
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": [
+          "Documentation"
+        ],
+        "summary": "Machine-readable OpenAPI 3.1 contract",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "This OpenAPI document. Endpoint schemas describe wire behavior; deployed health reports the loaded contract version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "openapi": {
+                      "type": "string"
+                    },
+                    "info": {
+                      "type": "object",
+                      "properties": {
+                        "title": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "version"
+                      ]
+                    },
+                    "paths": {
+                      "type": "object"
+                    },
+                    "components": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "openapi",
+                    "info",
+                    "paths"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1486,7 +1805,8 @@
           },
           "price": {
             "type": "number",
-            "description": "Observed USD unit price; excludes taxes and fees. Use decimal arithmetic for totals."
+            "description": "Observed USD price as a JSON number. On an expired catalog item it remains historical; price_fresh/selectable and quote expiry govern reuse. Use decimal arithmetic for money.",
+            "minimum": 0
           },
           "currency": {
             "type": "string",
@@ -1532,7 +1852,10 @@
             ]
           },
           "requested_zip": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "location_verified": {
             "type": "boolean"
@@ -1541,10 +1864,12 @@
             "type": "boolean"
           },
           "price_expires_in": {
-            "type": "number"
+            "type": "number",
+            "minimum": 0
           },
           "age_seconds": {
-            "type": "number"
+            "type": "number",
+            "minimum": 0
           },
           "last_seen": {
             "type": "string",
@@ -1635,7 +1960,8 @@
             "type": "string"
           },
           "local_offer_eligible": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Requires acknowledged matching context, unexpired price and verified primary charge basis. A numeric price or selectable catalog flag alone does not satisfy savings eligibility."
           },
           "discovery_only": {
             "type": "boolean"
@@ -1647,12 +1973,72 @@
             ]
           },
           "source_provider": {
+            "$ref": "#/components/schemas/SourceProvider"
+          },
+          "provider": {
             "type": "string",
             "enum": [
-              "xbyte_foodspark",
-              "instacart_browser"
+              "instacart"
             ],
-            "description": "Actual fetch transport when known. The legacy provider/cache namespace is not the fetch transport."
+            "description": "Legacy cache/catalog namespace; not the identity of the upstream fetch transport."
+          },
+          "context_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque location/session identity. Compare exact values; never construct one from a ZIP or address."
+          },
+          "context_compatible": {
+            "type": "boolean"
+          },
+          "cache_source": {
+            "type": "string",
+            "enum": [
+              "live",
+              "memory_cache",
+              "persistent_cache",
+              "catalog_discovery"
+            ]
+          },
+          "retrieved_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "branch_verified": {
+            "type": "boolean"
+          },
+          "delivery_verified": {
+            "type": "boolean"
+          },
+          "brand": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "catalog_key": {
+            "type": "string"
+          },
+          "product_key": {
+            "type": "string"
+          },
+          "provider_context": {
+            "$ref": "#/components/schemas/ProviderContext"
+          },
+          "provider_location_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fulfillment": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1667,7 +2053,8 @@
           "url",
           "image_url",
           "availability"
-        ]
+        ],
+        "description": "Normalized current shopping product. Optional evidence fields can be absent in retained observations. Nullable size, image_url, url and availability must be handled explicitly. Provider-test items use a separate model."
       },
       "Location": {
         "type": "object",
@@ -1700,13 +2087,24 @@
             "type": "boolean"
           },
           "provider_context": {
-            "$ref": "#/components/schemas/ProviderContext"
+            "$ref": "#/components/schemas/ProviderContext",
+            "description": "Optional browser evidence. FoodSpark does not currently emit this nested object; do not require it to decode a search."
+          },
+          "context_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "address_selected": {
+            "type": "boolean"
           }
         },
         "required": [
           "requested_zip",
           "verified"
-        ]
+        ],
+        "description": "verified means acknowledged requested ZIP/context for these observations, not store stock, a verified branch or delivery serviceability. context_id is opaque and optional in catalog/cache-miss/error envelopes."
       },
       "Cache": {
         "type": "object",
@@ -1737,13 +2135,35 @@
           },
           "ttl_seconds": {
             "type": "integer"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "live",
+                "memory_cache",
+                "persistent_cache",
+                "catalog_discovery"
+              ]
+            }
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "live",
+              "memory_cache",
+              "persistent_cache",
+              "catalog_discovery"
+            ]
           }
         },
         "required": [
           "hit",
           "age_seconds",
           "expires_in"
-        ]
+        ],
+        "description": "Non-sliding freshness metadata. Search uses sources; catalog uses singular source. Cache reads never renew an issued search_id or its price expiry."
       },
       "SearchRequest": {
         "type": "object",
@@ -1756,7 +2176,8 @@
           "query": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 120
+            "maxLength": 120,
+            "pattern": "\\S"
           },
           "queries": {
             "type": "array",
@@ -1765,7 +2186,8 @@
             "items": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 120
+              "maxLength": 120,
+              "pattern": "\\S"
             }
           },
           "retailer": {
@@ -1780,7 +2202,14 @@
             "description": "Explicit consent to non-local demo results; never implies ZIP verification."
           },
           "location": {
-            "$ref": "#/components/schemas/LocationInput"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocationInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "mode": {
             "type": "string",
@@ -1791,10 +2220,10 @@
               "catalog",
               "live"
             ],
-            "default": "auto"
+            "default": "auto",
+            "description": "auto reuses fresh exact snapshots and fetches misses; cache_only never fetches/schedules refresh; refresh asks for a fresh snapshot (concurrent refreshes may coalesce). On this synchronous route, legacy live and catalog are cache-first aliases of auto. Only /compare mode=catalog is stored discovery-only."
           }
         },
-        "required": [],
         "anyOf": [
           {
             "required": [
@@ -1804,99 +2233,46 @@
           {
             "required": [
               "location"
-            ]
-          }
-        ],
-        "description": "Provide query or queries. If both are present, queries takes precedence.",
-        "additionalProperties": false
-      },
-      "SearchResponse": {
-        "type": "object",
-        "properties": {
-          "search_id": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "ok"
-            ]
-          },
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Product"
-            }
-          },
-          "location": {
-            "$ref": "#/components/schemas/Location"
-          },
-          "warnings": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "retrieved_at": {
-            "type": "string"
-          },
-          "cache": {
-            "$ref": "#/components/schemas/Cache"
-          },
-          "expires_in": {
-            "type": "number"
-          },
-          "cart_updated": {
-            "type": "boolean"
-          },
-          "retailers": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "name": {
-                  "type": "string"
-                },
-                "products_returned": {
-                  "type": "integer"
-                },
-                "branch_verified": {
-                  "type": "boolean"
-                }
+            ],
+            "properties": {
+              "location": {
+                "type": "object",
+                "required": [
+                  "postal_code"
+                ]
               }
             }
-          },
-          "diagnostics": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "additionalProperties": true
-            }
-          },
-          "source_providers": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "xbyte_foodspark",
-                "instacart_browser"
-              ]
-            },
-            "description": "Fetch transports represented by the returned items. May be absent from older responses."
           }
-        },
-        "required": [
-          "search_id",
-          "status",
-          "items",
-          "location",
-          "cache",
-          "expires_in",
-          "cart_updated"
+        ],
+        "description": "One to three nonblank query strings, maximum 120 characters each; duplicates are trimmed/deduplicated. queries takes precedence over query. A five-digit ZIP is required through zip or location.postal_code. With configured key + retailer + full address, new shopping fetches use X-Byte/FoodSpark; otherwise the browser. No fallback after an X-Byte error. Request bodies are 1\u201310000 UTF-8 JSON bytes.",
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "anyOf": [
+              {
+                "required": [
+                  "query"
+                ]
+              },
+              {
+                "required": [
+                  "queries"
+                ]
+              }
+            ]
+          }
         ]
+      },
+      "SearchResponse": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SearchResultSuccess"
+          },
+          {
+            "$ref": "#/components/schemas/SearchCacheMiss"
+          }
+        ],
+        "description": "Discriminate by status: ok/partial have a search_id; cache_miss does not. The same union appears in succeeded async jobs."
       },
       "CatalogResponse": {
         "type": "object",
@@ -1913,14 +2289,7 @@
           "items": {
             "type": "array",
             "items": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/Product"
-                },
-                {
-                  "$ref": "#/components/schemas/ComparisonItem"
-                }
-              ]
+              "$ref": "#/components/schemas/CatalogItem"
             }
           },
           "location": {
@@ -1936,15 +2305,15 @@
             }
           },
           "discovery": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "additionalProperties": true
+            "type": "null",
+            "description": "Legacy field, currently always null."
           },
           "catalog": {
-            "type": "object",
-            "additionalProperties": true
+            "$ref": "#/components/schemas/CatalogCounts"
+          },
+          "excluded_unverified_observations": {
+            "type": "integer",
+            "minimum": 0
           }
         },
         "required": [
@@ -1954,8 +2323,11 @@
           "location",
           "cache",
           "warnings",
-          "catalog"
-        ]
+          "catalog",
+          "discovery",
+          "excluded_unverified_observations"
+        ],
+        "description": "Stored discovery only; no upstream search. search_id is created on every response but a server quote is retained only if at least one item is selectable. Cache.expires_in is zero when there are no selectable items."
       },
       "Error": {
         "type": "object",
@@ -1979,8 +2351,19 @@
             "$ref": "#/components/schemas/Location"
           }
         },
-        "required": [],
-        "description": "Error code is error OR status (legacy connector). Android must read error ?? status. Do not treat empty items on non-2xx as success."
+        "anyOf": [
+          {
+            "required": [
+              "error"
+            ]
+          },
+          {
+            "required": [
+              "status"
+            ]
+          }
+        ],
+        "description": "Non-2xx failure. Read error first, otherwise status. Some legacy failures omit message, items or location; an empty items array does not indicate a successful search. Request-shape failures use invalid_request. Ignore additional response fields for forward compatibility."
       },
       "SelectionRequest": {
         "type": "object",
@@ -2000,7 +2383,8 @@
         "required": [
           "search_id",
           "item_ids"
-        ]
+        ],
+        "description": "Select at most 60 IDs from one live server search snapshot. Duplicate IDs are deduplicated before subtotal; unknown IDs return 422. Missing/expired search IDs return 404 search_expired."
       },
       "SelectionResponse": {
         "type": "object",
@@ -2018,10 +2402,10 @@
             "type": "number"
           },
           "currency": {
-            "type": "string"
+            "const": "USD"
           },
           "cart_updated": {
-            "type": "boolean"
+            "const": false
           },
           "location": {
             "$ref": "#/components/schemas/Location"
@@ -2069,12 +2453,11 @@
             "maxItems": 60,
             "items": {
               "$ref": "#/components/schemas/CartLine"
-            }
+            },
+            "default": []
           }
         },
-        "required": [
-          "lines"
-        ]
+        "description": "Local cart validation. Omitted lines and an empty array both produce an empty cart response. Reject duplicate (search_id,item_id) pairs; quantities are integer 1\u201399. No server basket is persisted."
       },
       "CartProduct": {
         "allOf": [
@@ -2116,19 +2499,20 @@
             }
           },
           "item_count": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Sum of quantities, not the number of distinct product lines."
           },
           "subtotal": {
             "type": "number"
           },
           "currency": {
-            "type": "string"
+            "const": "USD"
           },
           "cart_updated": {
-            "type": "boolean"
+            "const": false
           },
           "provider_cart_updated": {
-            "type": "boolean"
+            "const": false
           },
           "location_verified": {
             "type": "boolean"
@@ -2156,14 +2540,18 @@
             "pattern": "^(\\*|[a-z0-9][a-z0-9-]{0,63})$"
           },
           "zip": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "pattern": "^[0-9]{5}$",
-            "example": "63129"
+            "description": "Omit or pass null to invalidate the retailer across all ZIPs; * plus no ZIP is global invalidation."
           }
         },
         "required": [
           "retailer"
-        ]
+        ],
+        "description": "Public prototype maintenance endpoint, not part of routine app search. Rate-limited once per (retailer,ZIP) group per minute. Does not require OperatorBearer in the current implementation."
       },
       "InvalidateResponse": {
         "type": "object",
@@ -2199,40 +2587,34 @@
         "type": "object",
         "properties": {
           "status": {
-            "type": "string"
+            "const": "ok"
           },
           "version": {
             "type": "string"
           },
           "freshness_v07": {
-            "type": "boolean",
-            "description": "Whether the optional Instacart freshness policy is enabled."
+            "type": "boolean"
           }
         },
         "required": [
           "status",
-          "version"
-        ]
+          "version",
+          "freshness_v07"
+        ],
+        "description": "Process liveness and loaded contract version; not proof of upstream provider availability."
       },
       "IngestionStatus": {
-        "type": "object",
-        "description": "Operational diagnostic counters. Fields may expand; not an Android commerce model.",
-        "additionalProperties": true,
-        "properties": {
-          "hot_refresh": {
-            "type": "object",
-            "description": "Sanitized admitted refresh capacity and pending demand. Private addresses are not included."
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/IngestionEnabled"
+          },
+          {
+            "$ref": "#/components/schemas/IngestionDisabled"
           }
-        }
+        ]
       },
       "ComparisonItem": {
         "type": "object",
-        "required": [
-          "id",
-          "name",
-          "provider",
-          "selectable"
-        ],
         "properties": {
           "id": {
             "type": "string"
@@ -2240,46 +2622,240 @@
           "name": {
             "type": "string"
           },
-          "provider": {
-            "enum": [
-              "instacart"
+          "size": {
+            "type": [
+              "string",
+              "null"
             ]
           },
           "price": {
             "type": [
               "number",
               "null"
-            ]
-          },
-          "provider_price": {
-            "type": [
-              "number",
-              "null"
-            ]
+            ],
+            "description": "Observed USD price as a JSON number. On an expired catalog item it remains historical; price_fresh/selectable and quote expiry govern reuse. Use decimal arithmetic for money.",
+            "minimum": 0
           },
           "currency": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Observed currency. Current normalized priced shopping items use USD; retained metadata may be incomplete."
           },
-          "image_url": {
+          "retailer": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "observed_zip": {
             "type": [
               "string",
               "null"
             ]
           },
-          "selectable": {
-            "const": false
+          "source": {
+            "type": "string"
           },
-          "price_unit_verified": {
-            "type": "boolean"
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Provider product link when returned. May be null for X-Byte/FoodSpark; do not invent a handoff URL."
+          },
+          "image_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Optional HTTPS thumbnail. Display a placeholder if missing or loading fails."
+          },
+          "availability": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_zip": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "location_verified": {
             "type": "boolean"
           },
-          "provider_product_id": {
+          "price_fresh": {
+            "type": "boolean"
+          },
+          "price_expires_in": {
+            "type": "number",
+            "minimum": 0
+          },
+          "age_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "selectable": {
+            "const": false
+          },
+          "price_basis": {
+            "type": "string",
+            "enum": [
+              "per_item",
+              "per_lb",
+              "per_oz",
+              "per_fl_oz",
+              "per_kg",
+              "per_g",
+              "per_ct",
+              "unspecified"
+            ]
+          },
+          "size_status": {
+            "type": "string",
+            "enum": [
+              "displayed",
+              "not_extracted"
+            ]
+          },
+          "variants_status": {
+            "type": "string",
+            "enum": [
+              "not_exposed"
+            ]
+          },
+          "promotion_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit_price": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "amount": {
+                "type": "number",
+                "minimum": 0
+              },
+              "unit": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "amount",
+              "unit"
+            ]
+          },
+          "last_seen_price": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Historical observed price; not permission to quote or add an expired offer."
+          },
+          "price_status": {
+            "type": "string",
+            "enum": [
+              "fresh",
+              "expired"
+            ],
+            "description": "Catalog observation freshness; selection additionally requires compatible provider context."
+          },
+          "price_basis_verified": {
+            "type": "boolean"
+          },
+          "price_unit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "price_label": {
             "type": "string"
+          },
+          "price_unit_evidence": {
+            "type": "string"
+          },
+          "local_offer_eligible": {
+            "type": "boolean",
+            "description": "Requires acknowledged matching context, unexpired price and verified primary charge basis. A numeric price or selectable catalog flag alone does not satisfy savings eligibility."
+          },
+          "discovery_only": {
+            "type": "boolean"
+          },
+          "quantity_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_provider": {
+            "$ref": "#/components/schemas/SourceProvider"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "instacart"
+            ],
+            "description": "Legacy cache/catalog namespace; not the identity of the upstream fetch transport."
+          },
+          "context_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque location/session identity. Compare exact values; never construct one from a ZIP or address."
+          },
+          "context_compatible": {
+            "type": "boolean"
+          },
+          "cache_source": {
+            "type": "string",
+            "enum": [
+              "live",
+              "memory_cache",
+              "persistent_cache",
+              "catalog_discovery"
+            ]
+          },
+          "retrieved_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "branch_verified": {
+            "type": "boolean"
+          },
+          "delivery_verified": {
+            "type": "boolean"
+          },
+          "brand": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "catalog_key": {
+            "type": "string"
+          },
+          "product_key": {
+            "type": "string"
+          },
+          "provider_context": {
+            "$ref": "#/components/schemas/ProviderContext"
           },
           "provider_location_id": {
             "type": [
@@ -2287,37 +2863,33 @@
               "null"
             ]
           },
-          "age_seconds": {
-            "type": "number"
-          },
-          "price_expires_in": {
-            "type": "number"
-          },
-          "price_fresh": {
-            "type": "boolean"
+          "fulfillment": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
-        "additionalProperties": true
+        "required": [
+          "id",
+          "name",
+          "provider",
+          "selectable",
+          "source_provider"
+        ],
+        "description": "Observation from browser fetch or shared cache/catalog (possibly X-Byte). Never a shopping quote. Retained older observations may omit optional product/evidence fields."
       },
       "ProviderComparison": {
         "type": "object",
-        "required": [
-          "provider",
-          "status",
-          "error",
-          "items",
-          "metrics",
-          "location",
-          "cache_hit",
-          "duration_ms"
-        ],
         "properties": {
           "provider": {
+            "type": "string",
             "enum": [
               "instacart"
             ]
           },
           "status": {
+            "type": "string",
             "enum": [
               "ok",
               "empty",
@@ -2328,24 +2900,14 @@
             ]
           },
           "error": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "properties": {
-              "code": {
-                "type": "string"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderError"
               },
-              "message": {
-                "type": "string"
-              },
-              "http_status": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
+              {
+                "type": "null"
               }
-            }
+            ]
           },
           "items": {
             "type": "array",
@@ -2354,18 +2916,83 @@
             }
           },
           "metrics": {
-            "type": "object"
+            "$ref": "#/components/schemas/ComparisonMetrics"
           },
           "location": {
-            "type": "object"
+            "$ref": "#/components/schemas/Location"
           },
           "cache_hit": {
             "type": "boolean"
           },
           "duration_ms": {
-            "type": "integer"
+            "type": "integer",
+            "minimum": 0
+          },
+          "cache_sources": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "live",
+                "memory_cache",
+                "persistent_cache",
+                "catalog_discovery"
+              ]
+            }
+          },
+          "source_providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceProvider"
+            },
+            "uniqueItems": true
+          },
+          "coverage_complete": {
+            "const": false
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "catalog_discovery",
+              "cache_or_live"
+            ]
+          },
+          "retailers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Retailer"
+            }
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchDiagnostic"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
-        }
+        },
+        "required": [
+          "provider",
+          "status",
+          "error",
+          "items",
+          "metrics",
+          "location",
+          "cache_hit",
+          "duration_ms",
+          "cache_sources",
+          "source_providers",
+          "coverage_complete",
+          "source",
+          "retailers",
+          "diagnostics",
+          "warnings"
+        ]
       },
       "ComparisonResponse": {
         "type": "object",
@@ -2408,7 +3035,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ProviderComparison"
-            }
+            },
+            "maxItems": 1
           },
           "note": {
             "type": "string"
@@ -2417,9 +3045,6 @@
       },
       "LocationInput": {
         "type": "object",
-        "required": [
-          "postal_code"
-        ],
         "additionalProperties": false,
         "properties": {
           "postal_code": {
@@ -2433,7 +3058,10 @@
             ]
           },
           "address": {
-            "type": "object",
+            "type": [
+              "object",
+              "null"
+            ],
             "required": [
               "line1",
               "city",
@@ -2444,27 +3072,33 @@
               "line1": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 200
+                "maxLength": 200,
+                "pattern": "\\S"
               },
               "line2": {
                 "type": "string",
-                "minLength": 1,
-                "maxLength": 200
+                "maxLength": 100,
+                "description": "Optional apartment/unit line. Empty string is accepted."
               },
               "city": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 200
+                "maxLength": 200,
+                "pattern": "\\S"
               },
               "region": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 200
+                "maxLength": 200,
+                "pattern": "\\S"
               }
             }
           },
           "coordinates": {
-            "type": "object",
+            "type": [
+              "object",
+              "null"
+            ],
             "required": [
               "latitude",
               "longitude"
@@ -2488,8 +3122,17 @@
           "required": [
             "address",
             "coordinates"
-          ]
-        }
+          ],
+          "properties": {
+            "address": {
+              "type": "object"
+            },
+            "coordinates": {
+              "type": "object"
+            }
+          }
+        },
+        "description": "Supply postal_code here or top-level zip. If both are present they must match. country_code defaults to US. Address or coordinates can be supplied, but an adapter may return location_unsupported; providing location is not verification."
       },
       "HttpComparisonRequest": {
         "type": "object",
@@ -2502,23 +3145,25 @@
           "query": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 120
+            "maxLength": 120,
+            "pattern": "\\S"
           },
           "queries": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 3,
+            "maxItems": 1,
             "items": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 120
+              "maxLength": 120,
+              "pattern": "\\S"
             }
           },
           "retailer": {
             "type": "string",
             "pattern": "^([a-z0-9][a-z0-9-]{0,63})?$",
             "default": "",
-            "description": "Empty discovers visible retailers; otherwise use a returned retailer id."
+            "description": "Retailer slug. With full location.address and configured server access, normal shopping search uses X-Byte/FoodSpark. Empty uses browser discovery."
           },
           "allow_unverified_location": {
             "type": "boolean",
@@ -2526,7 +3171,14 @@
             "description": "Explicit consent to non-local demo results; never implies ZIP verification."
           },
           "location": {
-            "$ref": "#/components/schemas/LocationInput"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocationInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "mode": {
             "type": "string",
@@ -2537,7 +3189,8 @@
               "catalog",
               "live"
             ],
-            "default": "auto"
+            "default": "auto",
+            "description": "auto reuses fresh exact snapshots and fetches misses; cache_only never fetches/schedules refresh; refresh asks for a fresh snapshot (concurrent refreshes may coalesce). On this synchronous route, legacy live and catalog are cache-first aliases of auto. Only /compare mode=catalog is stored discovery-only."
           },
           "browser_mode": {
             "type": "string",
@@ -2546,10 +3199,9 @@
               "refresh",
               "cache_only"
             ],
-            "default": "auto"
+            "description": "Controls only the browser branch. Defaults to mode, or auto when mode is omitted. Direct anonymous HTTP always runs, including browser_mode=cache_only."
           }
         },
-        "required": [],
         "anyOf": [
           {
             "required": [
@@ -2559,11 +3211,56 @@
           {
             "required": [
               "location"
-            ]
+            ],
+            "properties": {
+              "location": {
+                "type": "object",
+                "required": [
+                  "postal_code"
+                ]
+              }
+            }
           }
         ],
-        "description": "Provide query or queries. If both are present, queries takes precedence.",
-        "additionalProperties": false
+        "description": "Exactly one query after deduplication. The direct branch always attempts a public HTTP read; browser_mode=cache_only is not a no-upstream option for the whole endpoint. Does not create shopping quotes.",
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "anyOf": [
+              {
+                "required": [
+                  "query"
+                ]
+              },
+              {
+                "required": [
+                  "queries"
+                ]
+              }
+            ]
+          },
+          {
+            "if": {
+              "not": {
+                "required": [
+                  "browser_mode"
+                ]
+              }
+            },
+            "then": {
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "refresh",
+                    "cache_only"
+                  ]
+                }
+              }
+            }
+          }
+        ]
       },
       "ProviderContext": {
         "type": "object",
@@ -2592,7 +3289,8 @@
           "authorized_state_configured": {
             "type": "boolean"
           }
-        }
+        },
+        "description": "Optional browser-specific evidence. Configured authorized state does not prove authenticated access or delivery eligibility."
       },
       "SearchJobAccepted": {
         "type": "object",
@@ -2614,9 +3312,12 @@
             "const": "queued"
           },
           "expires_in": {
-            "type": "integer"
+            "type": "integer",
+            "minimum": 0,
+            "description": "Job retention lifetime from creation; currently 600 seconds. Separate from the shorter price quote expiry."
           }
-        }
+        },
+        "description": "The only response that reveals job_token. Job may already be running by the time this queued acknowledgment arrives."
       },
       "SearchJobStatus": {
         "type": "object",
@@ -2646,18 +3347,29 @@
             ]
           },
           "created_at": {
-            "type": "number"
+            "type": "number",
+            "description": "Unix epoch seconds (JSON number), not an ISO string."
           },
           "started_at": {
-            "type": [
-              "number",
-              "null"
+            "anyOf": [
+              {
+                "type": "number",
+                "description": "Unix epoch seconds (JSON number), not an ISO string."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "finished_at": {
-            "type": [
-              "number",
-              "null"
+            "anyOf": [
+              {
+                "type": "number",
+                "description": "Unix epoch seconds (JSON number), not an ISO string."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "expires_in": {
@@ -2667,40 +3379,9 @@
             "type": "boolean"
           },
           "result": {
-            "oneOf": [
+            "anyOf": [
               {
                 "$ref": "#/components/schemas/SearchResponse"
-              },
-              {
-                "type": "object",
-                "required": [
-                  "status",
-                  "items",
-                  "missing_queries",
-                  "location",
-                  "cache"
-                ],
-                "properties": {
-                  "status": {
-                    "const": "cache_miss"
-                  },
-                  "items": {
-                    "type": "array",
-                    "maxItems": 0
-                  },
-                  "missing_queries": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  },
-                  "location": {
-                    "$ref": "#/components/schemas/Location"
-                  },
-                  "cache": {
-                    "$ref": "#/components/schemas/Cache"
-                  }
-                }
               },
               {
                 "type": "null"
@@ -2708,20 +3389,17 @@
             ]
           },
           "error": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "properties": {
-              "code": {
-                "type": "string"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SearchJobError"
               },
-              "message": {
-                "type": "string"
+              {
+                "type": "null"
               }
-            }
+            ]
           }
-        }
+        },
+        "description": "HTTP 200 is job retrieval success, not provider success. Poll queued/running; succeeded result can be ok, partial or cache_miss. failed/cancelled expose error.code/message. A cancel request may return running with cancel_requested=true; only terminal cancelled confirms cancellation. Completion can win the race. Unknown/expired job IDs and invalid/missing bearer tokens all return 403 job_access_denied."
       },
       "ProviderTestRequest": {
         "type": "object",
@@ -3712,7 +4390,16 @@
                   "minimum": 0
                 },
                 "status": {
-                  "type": "string"
+                  "type": "string",
+                  "enum": [
+                    "unsupported_operation",
+                    "fixture_only",
+                    "not_configured",
+                    "budget_unavailable",
+                    "read_budget_exhausted",
+                    "live_ready"
+                  ],
+                  "description": "live_ready means configuration and local allowance pass; it does not verify current upstream availability, an address match or successful inventory."
                 },
                 "requirements": {
                   "type": "array",
@@ -3743,6 +4430,2382 @@
           "test_api_version",
           "providers"
         ]
+      },
+      "SourceProvider": {
+        "type": "string",
+        "enum": [
+          "xbyte_foodspark",
+          "instacart_browser"
+        ],
+        "description": "Actual shopping fetch transport, independent of the legacy instacart cache/provider namespace."
+      },
+      "ProviderError": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "http_status": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ]
+      },
+      "PartialError": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ]
+      },
+      "SearchJobError": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ]
+      },
+      "SearchJobRequest": {
+        "type": "object",
+        "properties": {
+          "zip": {
+            "type": "string",
+            "pattern": "^[0-9]{5}$",
+            "example": "63129"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "\\S"
+          },
+          "queries": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "pattern": "\\S"
+            }
+          },
+          "retailer": {
+            "type": "string",
+            "pattern": "^([a-z0-9][a-z0-9-]{0,63})?$",
+            "default": "",
+            "description": "Retailer slug. With full location.address and configured server access, normal shopping search uses X-Byte/FoodSpark. Empty uses browser discovery."
+          },
+          "allow_unverified_location": {
+            "type": "boolean",
+            "default": false,
+            "description": "Explicit consent to non-local demo results; never implies ZIP verification."
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocationInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "refresh",
+              "cache_only"
+            ],
+            "default": "auto",
+            "description": "Jobs reject legacy live/catalog modes. Each accepted creation is rate-limited even for cache_only."
+          }
+        },
+        "anyOf": [
+          {
+            "required": [
+              "zip"
+            ]
+          },
+          {
+            "required": [
+              "location"
+            ],
+            "properties": {
+              "location": {
+                "type": "object",
+                "required": [
+                  "postal_code"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "One to three nonblank query strings, maximum 120 characters each; duplicates are trimmed/deduplicated. queries takes precedence over query. A five-digit ZIP is required through zip or location.postal_code. With configured key + retailer + full address, new shopping fetches use X-Byte/FoodSpark; otherwise the browser. No fallback after an X-Byte error. Request bodies are 1\u201310000 UTF-8 JSON bytes.",
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "anyOf": [
+              {
+                "required": [
+                  "query"
+                ]
+              },
+              {
+                "required": [
+                  "queries"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "ComparisonRequest": {
+        "type": "object",
+        "properties": {
+          "zip": {
+            "type": "string",
+            "pattern": "^[0-9]{5}$",
+            "example": "63129"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "\\S"
+          },
+          "queries": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "pattern": "\\S"
+            }
+          },
+          "retailer": {
+            "type": "string",
+            "pattern": "^([a-z0-9][a-z0-9-]{0,63})?$",
+            "default": "",
+            "description": "Retailer slug. With full location.address and configured server access, normal shopping search uses X-Byte/FoodSpark. Empty uses browser discovery."
+          },
+          "allow_unverified_location": {
+            "type": "boolean",
+            "default": false,
+            "description": "Explicit consent to non-local demo results; never implies ZIP verification."
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocationInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "catalog",
+              "live",
+              "auto",
+              "cache_only",
+              "refresh"
+            ],
+            "default": "catalog",
+            "description": "catalog reads retained discovery rows; cache_only reads fresh exact snapshots; neither sends an upstream request. live/auto reuse fresh exact snapshots; refresh requests a browser fetch. Cached observations can originate from X-Byte."
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "instacart"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 4,
+            "default": [
+              "instacart"
+            ],
+            "description": "Only instacart is active. Duplicate values are deduplicated. Explicit retired names return 410 provider_removed; other unsupported names return 422 invalid_request."
+          }
+        },
+        "anyOf": [
+          {
+            "required": [
+              "zip"
+            ]
+          },
+          {
+            "required": [
+              "location"
+            ],
+            "properties": {
+              "location": {
+                "type": "object",
+                "required": [
+                  "postal_code"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Observational legacy comparison. Fresh fetches use the browser; shared cache/catalog entries retain source_provider. Does not create shopping quote references.",
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "anyOf": [
+              {
+                "required": [
+                  "query"
+                ]
+              },
+              {
+                "required": [
+                  "queries"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "Retailer": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "products_returned": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "branch_verified": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "products_returned"
+        ],
+        "description": "Returned retailer organization/slug, not verified branch availability. branch_verified is absent from FoodSpark retailer summaries."
+      },
+      "PaginationDiagnostics": {
+        "type": "object",
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "shelf",
+                    "navigation"
+                  ]
+                },
+                "new_cards": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "kind",
+                "new_cards"
+              ]
+            }
+          },
+          "stop_reason": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "no_visible_next",
+              "action_limit",
+              "item_limit",
+              "time_budget",
+              "navigation_failed"
+            ]
+          },
+          "action_limit": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "item_limit": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "actions",
+          "stop_reason",
+          "action_limit",
+          "item_limit"
+        ]
+      },
+      "HtmlAudit": {
+        "type": "object",
+        "properties": {
+          "html_card_anchors": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "decoded_json_blocks": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retailer_result_groups": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unique_item_references": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fully_populated_unique_items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "references_missing_item_details": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "audit_unavailable": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SearchDiagnostic": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "conflicting_offers_omitted": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/PaginationDiagnostics"
+          },
+          "stage_counts": {
+            "type": "object",
+            "properties": {
+              "initial_html": {
+                "$ref": "#/components/schemas/HtmlAudit"
+              },
+              "initial_dom_cards": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "address_selected_dom_cards": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "collected_cards": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "cards_seen": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "products_returned": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retailers_with_products": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "collection_limit": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pagination_available": {
+            "type": "boolean"
+          },
+          "pagination_scope": {
+            "type": "string"
+          },
+          "page_url": {
+            "type": "string"
+          },
+          "observed_zip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "description": "Optional browser collection evidence. FoodSpark may return an empty diagnostics array. New diagnostic fields may be added without changing commerce DTOs."
+      },
+      "SearchResultSuccess": {
+        "type": "object",
+        "properties": {
+          "search_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "partial"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            }
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "retrieved_at": {
+            "type": "string"
+          },
+          "cache": {
+            "$ref": "#/components/schemas/Cache"
+          },
+          "expires_in": {
+            "type": "number"
+          },
+          "cart_updated": {
+            "const": false
+          },
+          "retailers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Retailer"
+            }
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchDiagnostic"
+            }
+          },
+          "source_providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceProvider"
+            },
+            "uniqueItems": true,
+            "description": "Transports represented by returned items, including mixed cached/fresh observations. Use per-item source_provider for labels."
+          },
+          "missing_queries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "partial_errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PartialError"
+            }
+          },
+          "coverage_complete": {
+            "const": false
+          }
+        },
+        "required": [
+          "search_id",
+          "status",
+          "items",
+          "location",
+          "cache",
+          "expires_in",
+          "cart_updated",
+          "missing_queries",
+          "partial_errors",
+          "coverage_complete",
+          "warnings",
+          "retailers",
+          "diagnostics",
+          "retrieved_at",
+          "source_providers"
+        ],
+        "description": "HTTP 200 shopping result. partial means at least one requested query was not covered; partial_errors can explain an upstream failure while usable earlier results remain. expires_in is the earliest returned snapshot expiry. search_id is process-local and usable only until expiry/restart."
+      },
+      "SearchCacheMiss": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "const": "cache_miss"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            },
+            "maxItems": 0
+          },
+          "missing_queries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location"
+          },
+          "cache": {
+            "$ref": "#/components/schemas/Cache"
+          }
+        },
+        "required": [
+          "status",
+          "items",
+          "missing_queries",
+          "location",
+          "cache"
+        ],
+        "description": "HTTP 200 cache_only miss. No search_id, top-level expires_in or cart_updated is emitted. Do not select, cart or calculate savings from this response."
+      },
+      "CatalogItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "price": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Historical observed amount, which may be missing on incomplete retained metadata. Expiry does not erase a numeric amount: use price_fresh and selectable to decide eligibility.",
+            "minimum": 0
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Observed currency. Current normalized priced shopping items use USD; retained metadata may be incomplete."
+          },
+          "retailer": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "observed_zip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Provider product link when returned. May be null for X-Byte/FoodSpark; do not invent a handoff URL."
+          },
+          "image_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Optional HTTPS thumbnail. Display a placeholder if missing or loading fails."
+          },
+          "availability": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_zip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location_verified": {
+            "type": "boolean"
+          },
+          "price_fresh": {
+            "type": "boolean"
+          },
+          "price_expires_in": {
+            "type": "number",
+            "minimum": 0
+          },
+          "age_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "selectable": {
+            "type": "boolean"
+          },
+          "price_basis": {
+            "type": "string",
+            "enum": [
+              "per_item",
+              "per_lb",
+              "per_oz",
+              "per_fl_oz",
+              "per_kg",
+              "per_g",
+              "per_ct",
+              "unspecified"
+            ]
+          },
+          "size_status": {
+            "type": "string",
+            "enum": [
+              "displayed",
+              "not_extracted"
+            ]
+          },
+          "variants_status": {
+            "type": "string",
+            "enum": [
+              "not_exposed"
+            ]
+          },
+          "promotion_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit_price": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "amount": {
+                "type": "number",
+                "minimum": 0
+              },
+              "unit": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "amount",
+              "unit"
+            ]
+          },
+          "last_seen_price": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Historical observed price; not permission to quote or add an expired offer."
+          },
+          "price_status": {
+            "type": "string",
+            "enum": [
+              "fresh",
+              "expired"
+            ],
+            "description": "Catalog observation freshness; selection additionally requires compatible provider context."
+          },
+          "price_basis_verified": {
+            "type": "boolean"
+          },
+          "price_unit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "price_label": {
+            "type": "string"
+          },
+          "price_unit_evidence": {
+            "type": "string"
+          },
+          "local_offer_eligible": {
+            "type": "boolean",
+            "description": "Requires acknowledged matching context, unexpired price and verified primary charge basis. A numeric price or selectable catalog flag alone does not satisfy savings eligibility."
+          },
+          "discovery_only": {
+            "type": "boolean"
+          },
+          "quantity_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_provider": {
+            "$ref": "#/components/schemas/SourceProvider"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "instacart"
+            ],
+            "description": "Legacy cache/catalog namespace; not the identity of the upstream fetch transport."
+          },
+          "context_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque location/session identity. Compare exact values; never construct one from a ZIP or address."
+          },
+          "context_compatible": {
+            "type": "boolean"
+          },
+          "cache_source": {
+            "type": "string",
+            "enum": [
+              "live",
+              "memory_cache",
+              "persistent_cache",
+              "catalog_discovery"
+            ]
+          },
+          "retrieved_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "branch_verified": {
+            "type": "boolean"
+          },
+          "delivery_verified": {
+            "type": "boolean"
+          },
+          "brand": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "catalog_key": {
+            "type": "string"
+          },
+          "product_key": {
+            "type": "string"
+          },
+          "provider_context": {
+            "$ref": "#/components/schemas/ProviderContext"
+          },
+          "provider_location_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fulfillment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "provider",
+          "age_seconds",
+          "price_fresh",
+          "price_expires_in",
+          "last_seen_price",
+          "price_status",
+          "last_seen",
+          "context_compatible",
+          "local_offer_eligible",
+          "discovery_only",
+          "selectable",
+          "source_provider"
+        ],
+        "description": "Retained observation with explicit freshness/context flags. Some fields introduced after an older snapshot was stored may be absent. A stale price remains a historical number, not a fresh quote. Only selectable items are stored in the catalog response search_id."
+      },
+      "CatalogCounts": {
+        "type": "object",
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retained_descriptions": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fresh_delivery_verified_offers": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fresh_zip_acknowledged_offers": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fresh_unverified_observations": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "products": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fresh_prices": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "stale_prices": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_products": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "distinct_products": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "with_images": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "verified_store_locations": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unverified_location_products": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "verified_zip_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "observed_zip_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "schema_version",
+          "retained_descriptions",
+          "fresh_delivery_verified_offers",
+          "fresh_zip_acknowledged_offers",
+          "fresh_unverified_observations",
+          "products",
+          "fresh_prices",
+          "stale_prices",
+          "max_products",
+          "distinct_products",
+          "with_images",
+          "verified_store_locations",
+          "unverified_location_products",
+          "verified_zip_codes",
+          "observed_zip_codes"
+        ],
+        "description": "Counts exclude retired providers. Requested/observed ZIP counts do not prove branches or delivery coverage."
+      },
+      "ComparisonMetrics": {
+        "type": "object",
+        "properties": {
+          "products": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "with_prices": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "with_images": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fresh": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retailers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "products",
+          "with_prices",
+          "with_images",
+          "fresh",
+          "retailers"
+        ]
+      },
+      "Readiness": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "const": "ready"
+          },
+          "storage_available": {
+            "type": "boolean"
+          },
+          "persistent_mount_configured": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "status",
+          "storage_available",
+          "persistent_mount_configured"
+        ],
+        "description": "Checks SQLite access. This does not probe suppliers or assert usable inventory."
+      },
+      "NotReady": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "const": "not_ready"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "message"
+        ]
+      },
+      "OfferReference": {
+        "type": "object",
+        "properties": {
+          "search_id": {
+            "type": "string"
+          },
+          "item_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "search_id",
+          "item_id"
+        ],
+        "additionalProperties": false
+      },
+      "SavingsRequest": {
+        "type": "object",
+        "properties": {
+          "offers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OfferReference"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 99,
+            "default": 1
+          }
+        },
+        "required": [
+          "offers"
+        ],
+        "additionalProperties": false,
+        "description": "Exactly two server-held, unexpired offer references. Client prices and unknown fields are rejected. Merchants must differ; product identity, name, size, USD charge basis and acknowledged context must match. Only per_item primary charge units qualify."
+      },
+      "SavingsOffer": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Product"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "search_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "search_id"
+            ]
+          }
+        ]
+      },
+      "SavingsResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "const": "verified_observation_comparison"
+          },
+          "compared_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "offers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SavingsOffer"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 99
+          },
+          "currency": {
+            "const": "USD"
+          },
+          "original_subtotal": {
+            "type": "number",
+            "minimum": 0
+          },
+          "replacement_subtotal": {
+            "type": "number",
+            "minimum": 0
+          },
+          "savings": {
+            "type": "number",
+            "minimum": 0
+          },
+          "savings_percent": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "lower_price_merchant": {
+            "type": "string"
+          },
+          "higher_price_merchant": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location"
+          },
+          "scope": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "compared_at",
+          "offers",
+          "quantity",
+          "currency",
+          "original_subtotal",
+          "replacement_subtotal",
+          "savings",
+          "savings_percent",
+          "lower_price_merchant",
+          "higher_price_merchant",
+          "expires_in",
+          "location",
+          "scope"
+        ],
+        "description": "Observed merchandise comparison, not checkout/delivery pricing. original_subtotal uses the higher unit price; replacement_subtotal uses the lower price, regardless of request order. offers retains request order and adds each search_id. Percent uses original_subtotal as denominator (zero original => zero percent). Rounded to cents; expires_in is the earlier reference expiry."
+      },
+      "SavingsConflict": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "enum": [
+              "price_expired",
+              "location_unverified",
+              "price_unit_unverified",
+              "conditional_price",
+              "provider_unsupported",
+              "mixed_location_context",
+              "different_merchants_required",
+              "product_mismatch",
+              "price_unit_mismatch",
+              "weighted_quantity_required"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "message"
+        ]
+      },
+      "ProviderRouting": {
+        "type": "object",
+        "properties": {
+          "primary_provider": {
+            "const": "xbyte_foodspark"
+          },
+          "selection": {
+            "const": "conditional"
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "requires": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "retailer",
+                "location.address"
+              ]
+            }
+          },
+          "otherwise": {
+            "const": "instacart_browser"
+          },
+          "on_primary_error": {
+            "const": "error_no_fallback"
+          },
+          "comparison": {
+            "const": "instacart_browser",
+            "description": "Fresh comparison fetch transport; cached items can originate from X-Byte."
+          },
+          "background_ingestion": {
+            "const": "instacart_browser"
+          },
+          "provider_test_route": {
+            "const": "/api/v1/provider-tests/search"
+          }
+        },
+        "required": [
+          "primary_provider",
+          "selection",
+          "configured",
+          "requires",
+          "otherwise",
+          "on_primary_error",
+          "comparison",
+          "background_ingestion",
+          "provider_test_route"
+        ]
+      },
+      "ProviderCapability": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "grocery_discovery"
+          },
+          "location_inputs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "zip",
+                "address"
+              ]
+            }
+          },
+          "retailer_required": {
+            "type": "boolean"
+          },
+          "address_acknowledgment_required": {
+            "type": "boolean"
+          },
+          "delivery_verified": {
+            "const": false
+          },
+          "cart": {
+            "const": "local_app_only"
+          }
+        },
+        "required": [
+          "kind",
+          "location_inputs",
+          "address_acknowledgment_required",
+          "delivery_verified",
+          "cart"
+        ]
+      },
+      "ProviderActivity": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "type": "number",
+            "description": "Unix epoch seconds (JSON number), not an ISO string."
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "instacart"
+            ]
+          },
+          "zip": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "http_status": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "item_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cache_hit": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ],
+            "description": "Existing SQLite wire value, integer 0 or 1 (not boolean)."
+          }
+        },
+        "required": [
+          "at",
+          "provider",
+          "zip",
+          "outcome",
+          "http_status",
+          "item_count",
+          "cache_hit"
+        ]
+      },
+      "ProviderStatus": {
+        "type": "object",
+        "properties": {
+          "instacart_session": {
+            "type": "object",
+            "properties": {
+              "configured": {
+                "type": "boolean"
+              },
+              "valid_configuration": {
+                "type": "boolean"
+              },
+              "authentication_verified": {
+                "const": false
+              }
+            },
+            "required": [
+              "configured",
+              "valid_configuration",
+              "authentication_verified"
+            ]
+          },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "instacart": {
+                "$ref": "#/components/schemas/ProviderCapability"
+              },
+              "xbyte_foodspark": {
+                "$ref": "#/components/schemas/ProviderCapability"
+              }
+            },
+            "required": [
+              "instacart",
+              "xbyte_foodspark"
+            ]
+          },
+          "routing": {
+            "$ref": "#/components/schemas/ProviderRouting"
+          },
+          "comparison_providers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "instacart"
+              ]
+            }
+          },
+          "retired_providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "storage": {
+            "type": "object",
+            "properties": {
+              "engine": {
+                "const": "sqlite"
+              },
+              "persistent_mount_configured": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "engine",
+              "persistent_mount_configured"
+            ]
+          },
+          "activity": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderActivity"
+            },
+            "maxItems": 50
+          }
+        },
+        "required": [
+          "instacart_session",
+          "capabilities",
+          "routing",
+          "comparison_providers",
+          "retired_providers",
+          "storage",
+          "activity"
+        ],
+        "description": "Configuration and recent comparison activity, not a live supplier availability probe. Retired names are informational only, never active choices."
+      },
+      "IngestionQueueItem": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "zip": {
+            "type": "string"
+          },
+          "retailer": {
+            "type": "string"
+          },
+          "requests": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "next_due": {
+            "type": "number",
+            "description": "Unix epoch seconds (JSON number), not an ISO string."
+          },
+          "successes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "failures": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_status": {
+            "type": "string"
+          },
+          "last_success": {
+            "anyOf": [
+              {
+                "type": "number",
+                "description": "Unix epoch seconds (JSON number), not an ISO string."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_attempt": {
+            "type": "number",
+            "description": "Unix epoch seconds (JSON number), not an ISO string."
+          },
+          "last_requested": {
+            "type": "number",
+            "description": "Unix epoch seconds (JSON number), not an ISO string."
+          },
+          "tier": {
+            "type": "string",
+            "enum": [
+              "hot",
+              "warm",
+              "discovery"
+            ]
+          },
+          "refresh_in_seconds": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "query",
+          "zip",
+          "retailer",
+          "requests",
+          "next_due",
+          "successes",
+          "failures",
+          "last_status",
+          "last_success",
+          "tier",
+          "refresh_in_seconds"
+        ]
+      },
+      "IngestionPause": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "paused_at": {
+            "type": "number",
+            "description": "Unix epoch seconds (JSON number), not an ISO string."
+          },
+          "scope": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "zip": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "retailer": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "description": "Retained provider pause evidence; legacy records may omit scope/timestamp details."
+      },
+      "IngestionError": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "message"
+        ]
+      },
+      "HotRefreshStatus": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "demand_entries": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "admitted": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "capacity": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "waiting": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "due": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "demand_ttl_seconds": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "refresh_lead_seconds": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "hard_quote_ttl_seconds": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "private_context_storage": {
+                "const": "memory_only"
+              },
+              "scope": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "enabled",
+              "demand_entries",
+              "admitted",
+              "capacity",
+              "waiting",
+              "due",
+              "demand_ttl_seconds",
+              "refresh_lead_seconds",
+              "hard_quote_ttl_seconds",
+              "private_context_storage",
+              "scope"
+            ]
+          }
+        ]
+      },
+      "IngestionEnabled": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "const": true
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "eligible_jobs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "work_state": {
+            "type": "string",
+            "enum": [
+              "scheduled",
+              "fetching",
+              "no_eligible_jobs",
+              "provider_paused",
+              "stopped"
+            ]
+          },
+          "paused_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "blocked_contexts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IngestionPause"
+            }
+          },
+          "blocked_jobs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "active_query": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "zip": {
+            "type": "string"
+          },
+          "retailer": {
+            "type": "string"
+          },
+          "location_verified": {
+            "const": false
+          },
+          "seed_type": {
+            "type": "string"
+          },
+          "search_groups": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "retailer_discovery_targets": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "restaurant_discovery_note": {
+            "type": "string"
+          },
+          "footprint": {
+            "type": "object",
+            "properties": {
+              "zip_codes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "zip_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "unique_queries": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "jobs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "max_zip_codes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "max_jobs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "max_queries_per_zip_retailer": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "zip_codes",
+              "zip_count",
+              "unique_queries",
+              "jobs",
+              "max_zip_codes",
+              "max_jobs",
+              "max_queries_per_zip_retailer"
+            ]
+          },
+          "hot_refresh": {
+            "$ref": "#/components/schemas/HotRefreshStatus"
+          },
+          "scheduler": {
+            "type": "object",
+            "properties": {
+              "tiers": {
+                "type": "object",
+                "properties": {
+                  "hot": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "warm": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "discovery": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "hot",
+                  "warm",
+                  "discovery"
+                ]
+              },
+              "refresh_targets_seconds": {
+                "type": "object",
+                "properties": {
+                  "hot": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "warm": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "discovery": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "hot",
+                  "warm",
+                  "discovery"
+                ]
+              },
+              "discovery_reserved_share": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            },
+            "required": [
+              "tiers",
+              "refresh_targets_seconds",
+              "discovery_reserved_share"
+            ]
+          },
+          "queue_pagination": {
+            "type": "object",
+            "properties": {
+              "offset": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "limit": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "total": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "next_offset": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "offset",
+              "limit",
+              "total",
+              "next_offset"
+            ]
+          },
+          "queue": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IngestionQueueItem"
+            }
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IngestionError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "circuit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IngestionPause"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "heartbeat": {
+            "anyOf": [
+              {
+                "type": "number",
+                "description": "Unix epoch seconds (JSON number), not an ISO string."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "throughput": {
+            "type": "object",
+            "properties": {
+              "sample_jobs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "mean_job_seconds": {
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "estimated_cycle_seconds": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "estimate_scope": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sample_jobs",
+              "mean_job_seconds",
+              "estimated_cycle_seconds",
+              "estimate_scope"
+            ]
+          },
+          "attempts_last_hour": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "hourly_budget": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "storage": {
+            "type": "object",
+            "properties": {
+              "engine": {
+                "const": "sqlite"
+              },
+              "path": {
+                "type": "string"
+              },
+              "persistent_mount_configured": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "engine",
+              "path",
+              "persistent_mount_configured"
+            ]
+          },
+          "resources": {
+            "type": "object",
+            "properties": {
+              "python_peak_rss_mb": {
+                "type": "number",
+                "minimum": 0
+              },
+              "finished_children_peak_rss_mb": {
+                "type": "number",
+                "minimum": 0
+              },
+              "catalog_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "free_disk_mb": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "python_peak_rss_mb",
+              "finished_children_peak_rss_mb",
+              "catalog_bytes",
+              "free_disk_mb"
+            ]
+          },
+          "catalog": {
+            "$ref": "#/components/schemas/CatalogCounts"
+          }
+        },
+        "required": [
+          "enabled",
+          "running",
+          "eligible_jobs",
+          "work_state",
+          "paused_reason",
+          "blocked_contexts",
+          "blocked_jobs",
+          "active_query",
+          "zip",
+          "retailer",
+          "location_verified",
+          "seed_type",
+          "search_groups",
+          "retailer_discovery_targets",
+          "restaurant_discovery_note",
+          "footprint",
+          "hot_refresh",
+          "scheduler",
+          "queue_pagination",
+          "queue",
+          "last_error",
+          "circuit",
+          "heartbeat",
+          "throughput",
+          "attempts_last_hour",
+          "hourly_budget",
+          "storage",
+          "resources",
+          "catalog"
+        ],
+        "description": "Operational state. running means there is eligible scheduled work, not that inventory is fresh. All activity times are epoch seconds. Pause/error/active query and heartbeat can be null."
+      },
+      "IngestionDisabled": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "const": false
+          },
+          "catalog": {
+            "$ref": "#/components/schemas/CatalogCounts"
+          }
+        },
+        "required": [
+          "enabled",
+          "catalog"
+        ]
+      },
+      "IngestionRecovery": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "const": "already_running"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "message"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "const": "recovered"
+              },
+              "probe_products": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "location_verified": {
+                "type": "boolean"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "probe_products",
+              "location_verified",
+              "message"
+            ]
+          }
+        ]
+      },
+      "DirectHttpResult": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "no_readable_products",
+              "provider_blocked",
+              "http_error",
+              "provider_timeout",
+              "network_error",
+              "invalid_response",
+              "error"
+            ]
+          },
+          "source": {
+            "const": "direct_http"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            }
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location"
+          },
+          "cart_supported": {
+            "const": false
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "http_status": {
+            "type": "integer"
+          },
+          "response_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "error": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "status",
+          "source",
+          "items",
+          "location",
+          "cart_supported",
+          "warnings",
+          "duration_ms"
+        ]
+      },
+      "TransportSummary": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "products": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "with_prices": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "with_images": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retailers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_hit": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/ProviderError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "coverage_complete": {
+            "type": "boolean"
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location"
+          }
+        },
+        "required": [
+          "status",
+          "products",
+          "with_prices",
+          "with_images",
+          "retailers",
+          "duration_ms",
+          "cache_hit",
+          "source",
+          "error",
+          "coverage_complete",
+          "location"
+        ]
+      },
+      "MigrationValidation": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "BLOCKED",
+              "PAIR_PARITY_ONLY"
+            ]
+          },
+          "gates": {
+            "type": "object",
+            "properties": {
+              "unique_identities": {
+                "type": "boolean"
+              },
+              "successful_nonempty_results": {
+                "type": "boolean"
+              },
+              "same_verified_context": {
+                "type": "boolean"
+              },
+              "same_product_retailer_ids": {
+                "type": "boolean"
+              },
+              "same_price_size_currency": {
+                "type": "boolean"
+              },
+              "image_coverage": {
+                "type": "boolean"
+              },
+              "coverage_proven": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "unique_identities",
+              "successful_nonempty_results",
+              "same_verified_context",
+              "same_product_retailer_ids",
+              "same_price_size_currency",
+              "image_coverage",
+              "coverage_proven"
+            ]
+          },
+          "direct_products": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "browser_products": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "overlap": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "matching_offers": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "release_approved": {
+            "const": false
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "gates",
+          "direct_products",
+          "browser_products",
+          "overlap",
+          "matching_offers",
+          "release_approved",
+          "note"
+        ]
+      },
+      "HttpComparisonSummary": {
+        "type": "object",
+        "properties": {
+          "comparability": {
+            "type": "string",
+            "enum": [
+              "comparable",
+              "not_comparable"
+            ]
+          },
+          "validation": {
+            "$ref": "#/components/schemas/MigrationValidation"
+          },
+          "direct_http": {
+            "$ref": "#/components/schemas/TransportSummary"
+          },
+          "browser": {
+            "$ref": "#/components/schemas/TransportSummary"
+          },
+          "matching_product_retailer_ids": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "equal_prices_on_matching_ids": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "equivalent_for_local_search": {
+            "type": "boolean"
+          },
+          "recommendation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "comparability",
+          "validation",
+          "direct_http",
+          "browser",
+          "matching_product_retailer_ids",
+          "equal_prices_on_matching_ids",
+          "equivalent_for_local_search",
+          "recommendation"
+        ]
+      },
+      "HttpComparisonResponse": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "const": "provider_blocked"
+              },
+              "direct_http": {
+                "$ref": "#/components/schemas/DirectHttpResult"
+              },
+              "browser": {
+                "type": "null"
+              },
+              "normal_search_changed": {
+                "const": false
+              }
+            },
+            "required": [
+              "status",
+              "direct_http",
+              "browser",
+              "normal_search_changed"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "const": "compared"
+              },
+              "browser_mode": {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "refresh",
+                  "cache_only"
+                ]
+              },
+              "direct_local_supported": {
+                "const": false
+              },
+              "summary": {
+                "$ref": "#/components/schemas/HttpComparisonSummary"
+              },
+              "direct_http": {
+                "$ref": "#/components/schemas/DirectHttpResult"
+              },
+              "browser": {
+                "$ref": "#/components/schemas/ProviderComparison"
+              },
+              "normal_search_changed": {
+                "const": false
+              }
+            },
+            "required": [
+              "status",
+              "browser_mode",
+              "direct_local_supported",
+              "summary",
+              "direct_http",
+              "browser",
+              "normal_search_changed"
+            ]
+          }
+        ]
       }
     },
     "securitySchemes": {
@@ -3762,5 +6825,6 @@
         "description": "Dedicated test token required only for mode=live. Never bundle it into a public/mobile application; use an authenticated development relay or enter it for an operator session. Fixture mode requires no token."
       }
     }
-  }
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema"
 }
