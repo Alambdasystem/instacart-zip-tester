@@ -143,14 +143,14 @@ class MiddlewareTests(unittest.TestCase):
         from northfork_checkout import CheckoutSessions
         class FakeNorthfork:
             def stores(self, zip_code):
-                return {'data':[{'identifier':'1727','provider':'instacart','name':'Schnucks','retailer_key':'schnucks','zip':zip_code}]}
+                return {'data':[{'identifier':'1727','provider':'schnucks-online','name':'Schnucks','retailer_key':'schnucks','zip':zip_code}]}
             def resolve(self, store, ingredients):
-                return {'data':{'store':{'identifier':'1727','provider':'instacart'},'ingredients':[
+                return {'data':{'store':{'identifier':'1727','provider':'schnucks-online'},'ingredients':[
                     {'name':i['name'],'products':[{'id':'nf-1','external_id':'nf-1','name':'Whole Milk','in_stock':True}]}
                     for i in ingredients]}}
             def push(self, store, zip_code, product_quantities):
                 self.pushed=(store,zip_code,product_quantities)
-                return {'handoff_status':302,'location':'https://www.instacart.com/store/checkout?transfer=sample'}
+                return {'handoff_status':302,'location':'https://www.schnucks.com/cart?transfer=sample'}
         client=FakeNorthfork();original=api.CHECKOUTS
         api.CHECKOUTS=CheckoutSessions(client_factory=lambda:client)
         try:
@@ -159,11 +159,11 @@ class MiddlewareTests(unittest.TestCase):
             with urlopen(self.url+'/api/v1/checkout/stores?zip=63129') as response:
                 self.assertEqual(response.status,200);stores=json.load(response)
             self.assertEqual(stores['source_provider'],'northfork')
-            code,resolved=self.post('/api/v1/checkout/resolve',{'search_id':'xbyte-search','store_id':'1727','lines':[{'item_id':'xbyte-1','quantity':2}]})
+            code,resolved=self.post('/api/v1/checkout/resolve',{'search_id':'xbyte-search','store_id':'1727','store_provider':'schnucks-online','lines':[{'item_id':'xbyte-1','quantity':2}]})
             self.assertEqual(code,200);self.assertEqual(resolved['status'],'products_resolved')
             code,handoff=self.post('/api/v1/checkout/handoff',{'checkout_id':resolved['checkout_id'],'items':[{'item_id':'xbyte-1','product_id':'nf-1','quantity':2}]})
             self.assertEqual(code,200);self.assertTrue(handoff['handoff_started']);self.assertFalse(handoff['cart_updated']);self.assertFalse(handoff['order_placed'])
-            self.assertEqual(client.pushed[2],[('nf-1',2)])
+            self.assertEqual(client.pushed[2],[('nf-1',2)]);self.assertEqual(handoff['retailer_provider'],'schnucks-online');self.assertIn('schnucks.com',handoff['handoff_url'])
         finally:
             api.RESULTS.pop('xbyte-search',None);api.CHECKOUTS=original
 

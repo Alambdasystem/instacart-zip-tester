@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "InstaSearch API Contract",
-    "version": "0.11.0",
-    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. The local basket is app-owned; explicit Northfork checkout routes can hand selected products to an Instacart cart, but never place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels. Optional v0.7 freshness scheduling preserves five-minute quote expiry. Catalog descriptions remain browsable with expired prices explicitly labeled; background refresh never renews an existing search_id. Cache-only never schedules refresh. Provider tests add isolated, explicitly selected X-Byte/FoodSpark and Northfork reads plus synthetic Actowiz schema fixtures. They never fall back or issue shopping quotes. Live tests require a dedicated token, enable flag and separate persistent read allowance. MealMe/Satsuma and the Vercel Kroger/Square adapters are retired. Normal shopping search prefers X-Byte/FoodSpark only with configured server access, a retailer slug and a full address; otherwise it uses browser discovery. X-Byte errors never trigger fallback. Legacy comparison fetches through the browser but can reuse cached X-Byte observations with their original source provenance. Catalog all excludes retired sources. Explicit retired-provider selections return HTTP 410 provider_removed. Version 0.10.1 explicitly documents existing partial/cache-miss/job/savings and operational envelopes without changing their wire field types. /health is liveness; /ready checks storage only."
+    "version": "0.12.0",
+    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. The local basket is app-owned; explicit Northfork checkout routes can hand selected products to the selected Northfork-enabled retailer cart, but never place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels. Optional v0.7 freshness scheduling preserves five-minute quote expiry. Catalog descriptions remain browsable with expired prices explicitly labeled; background refresh never renews an existing search_id. Cache-only never schedules refresh. Provider tests add isolated, explicitly selected X-Byte/FoodSpark and Northfork reads plus synthetic Actowiz schema fixtures. They never fall back or issue shopping quotes. Live tests require a dedicated token, enable flag and separate persistent read allowance. MealMe/Satsuma and the Vercel Kroger/Square adapters are retired. Normal shopping search prefers X-Byte/FoodSpark only with configured server access, a retailer slug and a full address; otherwise it uses browser discovery. X-Byte errors never trigger fallback. Legacy comparison fetches through the browser but can reuse cached X-Byte observations with their original source provenance. Catalog all excludes retired sources. Explicit retired-provider selections return HTTP 410 provider_removed. Version 0.10.1 explicitly documents existing partial/cache-miss/job/savings and operational envelopes without changing their wire field types. /health is liveness; /ready checks storage only."
   },
   "servers": [
     {
@@ -1791,8 +1791,8 @@
         "tags": [
           "Checkout"
         ],
-        "summary": "List Instacart stores Northfork can accept for checkout",
-        "description": "Northfork checkout candidates only. This endpoint does not claim to be X-Byte grocery store discovery and does not verify a physical branch or serviceability.",
+        "summary": "List Northfork-enabled grocery stores for a ZIP",
+        "description": "Returns the Northfork retailers and store locations enabled for this account and ZIP. This is Northfork checkout discovery, not X-Byte store discovery; returned data does not verify a physical branch or serviceability.",
         "parameters": [
           {
             "name": "zip",
@@ -1816,7 +1816,8 @@
                     "zip",
                     "source_provider",
                     "purpose",
-                    "store_branch_verified"
+                    "store_branch_verified",
+                    "retailer_scope"
                   ],
                   "properties": {
                     "stores": {
@@ -1831,7 +1832,8 @@
                             "type": "string"
                           },
                           "provider": {
-                            "const": "instacart"
+                            "type": "string",
+                            "description": "Northfork retailer/provider identifier for this store."
                           },
                           "retailer_key": {
                             "type": "string"
@@ -1853,6 +1855,9 @@
                     },
                     "store_branch_verified": {
                       "const": false
+                    },
+                    "retailer_scope": {
+                      "const": "all_enabled_northfork_retailers"
                     }
                   }
                 }
@@ -1874,8 +1879,8 @@
         "tags": [
           "Checkout"
         ],
-        "summary": "Resolve selected X-Byte products against a Northfork Instacart store",
-        "description": "Requires a live X-Byte grocery search result and one Northfork checkout store for the same retailer and ZIP. Returns Northfork product candidates; it does not write a cart.",
+        "summary": "Resolve selected X-Byte products against a Northfork store",
+        "description": "Requires a live X-Byte grocery search result and a Northfork-enabled store for the same retailer and ZIP. Select store_id and store_provider from /checkout/stores. Returns Northfork product candidates; it does not write a cart.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1885,6 +1890,7 @@
                 "required": [
                   "search_id",
                   "store_id",
+                  "store_provider",
                   "lines"
                 ],
                 "properties": {
@@ -1914,6 +1920,10 @@
                         }
                       }
                     }
+                  },
+                  "store_provider": {
+                    "type": "string",
+                    "description": "The provider identifier returned for the selected Northfork store."
                   }
                 }
               }
@@ -2016,8 +2026,8 @@
         "tags": [
           "Checkout"
         ],
-        "summary": "Create an Instacart cart handoff through Northfork",
-        "description": "Transfers the explicitly selected Northfork products and quantities. Returns the Northfork 3xx Location for the app/browser to open. Redirects are not followed and orders are never placed by this API.",
+        "summary": "Create a retailer cart handoff through Northfork",
+        "description": "Transfers explicitly selected Northfork products and quantities for the selected store. Returns Northfork’s retailer-specific 3xx Location for the app/browser to open. Redirects are not followed and orders are never placed by this API.",
         "requestBody": {
           "required": true,
           "content": {
@@ -2080,8 +2090,8 @@
                     "checkout_id",
                     "status",
                     "provider",
-                    "marketplace",
                     "store",
+                    "retailer_provider",
                     "item_count",
                     "handoff_url",
                     "redirect_status",
@@ -2098,9 +2108,6 @@
                     },
                     "provider": {
                       "const": "northfork"
-                    },
-                    "marketplace": {
-                      "const": "instacart"
                     },
                     "store": {
                       "type": "object"
@@ -2126,6 +2133,10 @@
                     },
                     "handoff_started": {
                       "const": true
+                    },
+                    "retailer_provider": {
+                      "type": "string",
+                      "description": "Northfork provider identifier for the selected retailer."
                     }
                   }
                 }
@@ -2139,7 +2150,7 @@
             "description": "Invalid candidate selection"
           },
           "502": {
-            "description": "Northfork did not return an Instacart handoff"
+            "description": "Northfork did not return a valid retailer cart handoff URL"
           },
           "429": {
             "description": "Checkout rate limit exceeded"

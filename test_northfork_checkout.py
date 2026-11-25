@@ -1,19 +1,19 @@
 import unittest
 
-from northfork_checkout import CheckoutError, CheckoutSessions, instacart_handoff_url
+from northfork_checkout import CheckoutError, CheckoutSessions, retailer_handoff_url
 
 
 class FakeNorthfork:
-    def __init__(self, store_id='1727', retailer='schnucks', redirect='https://www.instacart.com/store/checkout?transfer=demo'):
+    def __init__(self, store_id='1727', retailer='schnucks', redirect='https://www.schnucks.com/cart?transfer=demo'):
         self.store_id, self.retailer, self.redirect = store_id, retailer, redirect
         self.pushed = None
 
     def stores(self, zip_code):
-        return {'data': [{'identifier': self.store_id, 'provider': 'instacart', 'name': 'Schnucks',
+        return {'data': [{'identifier': self.store_id, 'provider': 'schnucks-online', 'name': 'Schnucks',
                           'retailer_key': self.retailer, 'zip': zip_code}]}
 
     def resolve(self, store, ingredients):
-        return {'data': {'store': {'identifier': store['identifier'], 'provider': 'instacart'}, 'ingredients': [
+        return {'data': {'store': {'identifier': store['identifier'], 'provider': 'schnucks-online'}, 'ingredients': [
             {'name': entry['name'], 'products': [{'id': 20653045, 'external_id': '20653045',
                 'name': 'Whole Milk', 'brand': 'Schnucks', 'price': 399, 'currency_code': 'USD',
                 'size': '1 gal', 'in_stock': True}]} for entry in ingredients]}}
@@ -31,16 +31,20 @@ class NorthforkCheckoutTests(unittest.TestCase):
             {'id': 'xbyte-milk', 'name': 'Whole Milk', 'brand': 'Schnucks', 'size': '1 gal',
              'retailer': 'schnucks', 'source_provider': 'xbyte_foodspark', 'price': 3.99}]}
 
-    def test_complete_resolve_to_instacart_handoff(self):
+    def test_complete_resolve_to_selected_retailer_handoff(self):
         stores = self.checkout.discover_stores('63129')
         self.assertEqual(stores['source_provider'], 'northfork')
         self.assertEqual(stores['stores'][0]['identifier'], '1727')
-        resolved = self.checkout.resolve(self.search, {'store_id': '1727', 'lines': [{'item_id': 'xbyte-milk', 'quantity': 2}]})
+        self.assertEqual(stores['retailer_scope'], 'all_enabled_northfork_retailers')
+        resolved = self.checkout.resolve(self.search, {'store_id': '1727', 'store_provider': 'schnucks-online', 'lines': [{'item_id': 'xbyte-milk', 'quantity': 2}]})
         self.assertEqual(resolved['status'], 'products_resolved')
         self.assertFalse(resolved['cart_updated'])
         self.assertEqual(resolved['lines'][0]['recommended_product_id'], '20653045')
         handoff = self.checkout.handoff(resolved['checkout_id'], [{'item_id': 'xbyte-milk', 'product_id': '20653045', 'quantity': 2}])
         self.assertEqual(handoff['status'], 'handoff_ready')
+        self.assertEqual(handoff['retailer_provider'], 'schnucks-online')
+        self.assertIn('schnucks.com', handoff['handoff_url'])
+        self.assertNotIn('marketplace', handoff)
         self.assertTrue(handoff['handoff_started'])
         self.assertFalse(handoff['cart_updated'])
         self.assertFalse(handoff['order_placed'])
@@ -49,33 +53,35 @@ class NorthforkCheckoutTests(unittest.TestCase):
     def test_rejects_wrong_retailer_store(self):
         self.client.retailer = 'walmart'
         with self.assertRaises(CheckoutError) as error:
-            self.checkout.resolve(self.search, {'store_id': '1727', 'lines': [{'item_id': 'xbyte-milk'}]})
+            self.checkout.resolve(self.search, {'store_id': '1727', 'store_provider': 'schnucks-online', 'lines': [{'item_id': 'xbyte-milk'}]})
         self.assertEqual(error.exception.code, 'store_not_found')
         self.assertIsNone(self.client.pushed)
 
     def test_rejects_non_xbyte_source(self):
         self.search['items'][0]['source_provider'] = 'instacart_browser'
         with self.assertRaises(CheckoutError) as error:
-            self.checkout.resolve(self.search, {'store_id': '1727', 'lines': [{'item_id': 'xbyte-milk'}]})
+            self.checkout.resolve(self.search, {'store_id': '1727', 'store_provider': 'schnucks-online', 'lines': [{'item_id': 'xbyte-milk'}]})
         self.assertEqual(error.exception.code, 'xbyte_source_required')
 
     def test_handoff_only_accepts_products_returned_by_northfork(self):
-        resolved = self.checkout.resolve(self.search, {'store_id': '1727', 'lines': [{'item_id': 'xbyte-milk'}]})
+        resolved = self.checkout.resolve(self.search, {'store_id': '1727', 'store_provider': 'schnucks-online', 'lines': [{'item_id': 'xbyte-milk'}]})
         with self.assertRaises(CheckoutError) as error:
             self.checkout.handoff(resolved['checkout_id'], [{'item_id': 'xbyte-milk', 'product_id': 'made-up'}])
         self.assertEqual(error.exception.code, 'invalid_selection')
         self.assertIsNone(self.client.pushed)
 
     def test_rejects_unsafe_handoff_url(self):
-        self.client.redirect = 'https://example.org/steal'
-        resolved = self.checkout.resolve(self.search, {'store_id': '1727', 'lines': [{'item_id': 'xbyte-milk'}]})
+        self.client.redirect = 'javascript:alert(1)'
+        resolved = self.checkout.resolve(self.search, {'store_id': '1727', 'store_provider': 'schnucks-online', 'lines': [{'item_id': 'xbyte-milk'}]})
         with self.assertRaises(CheckoutError) as error:
             self.checkout.handoff(resolved['checkout_id'], [{'item_id': 'xbyte-milk', 'product_id': '20653045'}])
         self.assertEqual(error.exception.code, 'handoff_failed')
-        self.assertFalse(instacart_handoff_url('javascript:alert(1)'))
+        self.assertFalse(retailer_handoff_url('javascript:alert(1)'))
+        self.assertFalse(retailer_handoff_url('https://user:pass@shop.example/cart'))
+        self.assertTrue(retailer_handoff_url('https://shop.example/cart'))
 
     def test_handoff_is_one_shot(self):
-        resolved = self.checkout.resolve(self.search, {'store_id': '1727', 'lines': [{'item_id': 'xbyte-milk'}]})
+        resolved = self.checkout.resolve(self.search, {'store_id': '1727', 'store_provider': 'schnucks-online', 'lines': [{'item_id': 'xbyte-milk'}]})
         line = [{'item_id': 'xbyte-milk', 'product_id': '20653045'}]
         self.checkout.handoff(resolved['checkout_id'], line)
         with self.assertRaises(CheckoutError) as error:

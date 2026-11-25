@@ -15,7 +15,7 @@ CAPABILITIES = {
                        'retailer_required': True, 'address_acknowledgment_required': True,
                        'zip_store_discovery': False, 'delivery_verified': False,
                        'cart': 'northfork_handoff'},
-    'northfork': {'kind': 'checkout_handoff', 'checkout_marketplaces': ['instacart'],
+    'northfork': {'kind': 'checkout_handoff', 'retailer_scope': 'all_enabled_northfork_retailers',
                   'routes': ['/api/v1/checkout/stores', '/api/v1/checkout/resolve', '/api/v1/checkout/handoff'],
                   'order_placement': False},
 }

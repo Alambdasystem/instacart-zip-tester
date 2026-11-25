@@ -158,8 +158,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(code,outcome)
                 except TestRequestError as e:return self.send(e.http_status,{'error':e.code,'message':e.message})
             if self.path=='/api/v1/checkout/resolve':
-                if set(data)-{'search_id','store_id','lines'} or not isinstance(data.get('search_id'),str):
-                    return self.send(422,{'error':'invalid_request','message':'Send search_id, store_id and selected lines.'})
+                if set(data)-{'search_id','store_id','store_provider','lines'} or not isinstance(data.get('search_id'),str):
+                    return self.send(422,{'error':'invalid_request','message':'Send search_id, store_id, store_provider and selected lines.'})
                 if checkout_rate_limited(self):return self.send(429,{'error':'rate_limited','message':'Northfork checkout is limited to ten requests per minute.'})
                 result=RESULTS.get(data['search_id'])
                 if not result or time.time()>=result.get('expires',result['created']+300):

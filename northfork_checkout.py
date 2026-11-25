@@ -1,9 +1,9 @@
-"""Northfork product resolution and third-party cart handoff.
+"""Northfork retailer discovery, product resolution and cart handoff.
 
-The X-Byte grocery search remains the source of the shopper's initial
-retailer product observations. Northfork re-resolves those selected product
-names against its supported Instacart store catalog, then creates a browser
-handoff. This module never follows the 302 and never places an order.
+Northfork returns the retailers and stores enabled for a requested ZIP. X-Byte
+product selections are re-resolved for the chosen Northfork store, and the
+returned retailer-specific URL is opened by the app. This module never follows
+the 302 and never places an order.
 """
 import json
 import os
@@ -98,7 +98,9 @@ class NorthforkClient:
             raise CheckoutError('provider_unavailable', 'Northfork could not be reached.', 502) from None
 
     def stores(self, zip_code):
-        return self._request('/api/stores', {'providers': 'instacart', 'zip': zip_code})
+        # Omitting `providers` asks Northfork for the full retailer set enabled
+        # for this account, rather than constraining discovery to one marketplace.
+        return self._request('/api/stores', {'zip': zip_code})
 
     def resolve(self, store, ingredients):
         return self._request('/api/smart-cart/ingredients/resolve', body={
@@ -128,12 +130,14 @@ def safe_store(store, zip_code):
     return result
 
 
-def instacart_handoff_url(value):
+def retailer_handoff_url(value):
     if not isinstance(value, str) or len(value) > 4096:
         return False
-    parsed = urlsplit(value)
-    host = (parsed.hostname or '').lower()
-    return parsed.scheme == 'https' and (host == 'instacart.com' or host.endswith('.instacart.com')) and not parsed.username and not parsed.password
+    try:
+        parsed = urlsplit(value)
+        return parsed.scheme == 'https' and bool(parsed.hostname) and not parsed.username and not parsed.password
+    except ValueError:
+        return False
 
 
 class CheckoutSessions:
@@ -156,13 +160,14 @@ class CheckoutSessions:
             raise CheckoutError('invalid_provider_response', 'Northfork did not return a store list.', 502)
         stores = []
         for store in data:
-            if (isinstance(store, dict) and store.get('provider') == 'instacart'
+            if (isinstance(store, dict) and self._text(store.get('provider'))
                     and str(store.get('identifier', '')).strip()
                     and self._text(store.get('name'))
                     and self._text(store.get('retailer_key'))):
                 stores.append(safe_store(store, zip_code))
         return {'stores': stores, 'zip': zip_code, 'source_provider': 'northfork',
-                'purpose': 'checkout_store_candidates', 'store_branch_verified': False}
+                'purpose': 'checkout_store_candidates', 'retailer_scope': 'all_enabled_northfork_retailers',
+                'store_branch_verified': False}
 
     def resolve(self, search_results, request):
         client = self.client_factory()
@@ -171,10 +176,11 @@ class CheckoutSessions:
             raise CheckoutError('invalid_location', 'The X-Byte search has no usable ZIP code.', 422)
         lines = request.get('lines')
         store_id = request.get('store_id')
+        store_provider = self._text(request.get('store_provider'))
         if not isinstance(lines, list) or not 1 <= len(lines) <= 60:
             raise CheckoutError('invalid_request', 'Send 1–60 selected product lines.', 422)
-        if not isinstance(store_id, str) or not store_id.strip():
-            raise CheckoutError('invalid_request', 'Choose a store_id returned by checkout store discovery.', 422)
+        if not isinstance(store_id, str) or not store_id.strip() or not store_provider:
+            raise CheckoutError('invalid_request', 'Choose a store_id and store_provider returned by checkout store discovery.', 422)
         products = {item.get('id'): item for item in search_results.get('items', []) if isinstance(item, dict)}
         chosen, seen = [], set()
         retailer = None
@@ -202,12 +208,12 @@ class CheckoutSessions:
         if not isinstance(store_rows, list):
             raise CheckoutError('invalid_provider_response', 'Northfork did not return a store list.', 502)
         matching = [s for s in store_rows if isinstance(s, dict)
-                    and s.get('provider') == 'instacart'
+                    and self._text(s.get('provider')).casefold() == store_provider.casefold()
                     and str(s.get('identifier')) == store_id
                     and self._text(s.get('retailer_key')).casefold() == retailer.casefold()]
         if len(matching) != 1:
-            raise CheckoutError('store_not_found', 'That Northfork Instacart store does not match the selected X-Byte retailer and ZIP.', 404,
-                                {'candidate_count': sum(1 for s in store_rows if isinstance(s, dict) and s.get('provider') == 'instacart' and self._text(s.get('retailer_key')).casefold() == retailer.casefold())})
+            raise CheckoutError('store_not_found', 'That Northfork store does not match the selected X-Byte retailer and ZIP.', 404,
+                                {'candidate_count': sum(1 for s in store_rows if isinstance(s, dict) and self._text(s.get('provider')).casefold() == store_provider.casefold() and self._text(s.get('retailer_key')).casefold() == retailer.casefold())})
         store = matching[0]
         ingredients = []
         for line in chosen:
@@ -219,7 +225,9 @@ class CheckoutSessions:
         if not isinstance(resolved, dict) or not isinstance(resolved.get('ingredients'), list):
             raise CheckoutError('invalid_provider_response', 'Northfork did not return resolved checkout products.', 502)
         resolved_store = resolved.get('store')
-        if not isinstance(resolved_store, dict) or resolved_store.get('provider') != 'instacart' or str(resolved_store.get('identifier')) != store_id:
+        if (not isinstance(resolved_store, dict)
+                or self._text(resolved_store.get('provider')).casefold() != store_provider.casefold()
+                or str(resolved_store.get('identifier')) != store_id):
             raise CheckoutError('store_mismatch', 'Northfork resolved products for a different store.', 502)
         if len(resolved['ingredients']) != len(chosen):
             raise CheckoutError('incomplete_resolution', 'Northfork did not resolve every selected product.', 409)
@@ -283,11 +291,12 @@ class CheckoutSessions:
                 raise CheckoutError('handoff_already_started', 'This checkout handoff has already been started.', 409)
             session['status'] = 'handoff_started'
         result = self.client_factory().push(session['store'], session['zip'], pairs)
-        if result.get('handoff_status') not in (301, 302, 303, 307, 308) or not instacart_handoff_url(result.get('location')):
+        if result.get('handoff_status') not in (301, 302, 303, 307, 308) or not retailer_handoff_url(result.get('location')):
             session['status'] = 'handoff_failed'
-            raise CheckoutError('handoff_failed', 'Northfork did not return a valid Instacart cart handoff URL.', 502)
+            raise CheckoutError('handoff_failed', 'Northfork did not return a valid retailer cart handoff URL.', 502)
         return {'checkout_id': checkout_id, 'status': 'handoff_ready', 'provider': 'northfork',
-                'marketplace': 'instacart', 'store': session['store'], 'item_count': len(pairs),
+                'retailer_provider': session['store']['provider'], 'retailer_key': session['store']['retailer_key'],
+                'store': session['store'], 'item_count': len(pairs),
                 'handoff_url': result['location'], 'redirect_status': result['handoff_status'],
                 'handoff_started': True, 'cart_updated': False, 'order_placed': False,
-                'instructions': 'Open handoff_url to sign in to Instacart and review the transferred products. Review and place the order on Instacart.'}
+                'instructions': 'Open handoff_url to continue in the selected retailer’s checkout. Verify transferred products and complete checkout there.'}
