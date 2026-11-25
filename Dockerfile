@@ -1,7 +1,7 @@
 FROM mcr.microsoft.com/playwright/python:v1.64.1-noble
 WORKDIR /app
 RUN pip install --no-cache-dir playwright==1.64.1
-COPY foodspark.py savings.py performance_probe.py refresh_planner.py freshness-config.json offer_store.py job_store.py search_service.py search_jobs.py cancellation.py isolated_runner.py browser_worker.py provider_session.py pagination.py operator_access.py operator_recover.py migration_validation.py deadline.py page_state.py observation.py direct_http.py telemetry.py provider_registry.py result_store.py location_context.py work_coordinator.py provider_comparison.py connector.py api_server.py search_cache.py ingestion.py middleware.html openapi.json swagger.html android-contract.md /app/
+COPY foodspark.py savings.py performance_probe.py refresh_planner.py freshness-config.json offer_store.py job_store.py search_service.py search_jobs.py cancellation.py isolated_runner.py browser_worker.py provider_session.py pagination.py operator_access.py operator_recover.py migration_validation.py deadline.py page_state.py observation.py direct_http.py telemetry.py provider_registry.py result_store.py location_context.py work_coordinator.py provider_comparison.py connector.py northfork_checkout.py api_server.py search_cache.py ingestion.py middleware.html openapi.json swagger.html android-contract.md /app/
 COPY provider_tests.py provider_test_adapters.py provider_test_normalize.py provider-lab.html /app/
 ENV PYTHONUNBUFFERED=1
 CMD ["python", "api_server.py"]
