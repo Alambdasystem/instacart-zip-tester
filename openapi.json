@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "InstaSearch API Contract",
-    "version": "0.12.3",
+    "version": "0.13.0",
     "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. The local basket is app-owned; explicit Northfork checkout routes can hand selected products to the selected Northfork-enabled retailer cart, but never place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels. Optional v0.7 freshness scheduling preserves five-minute quote expiry. Catalog descriptions remain browsable with expired prices explicitly labeled; background refresh never renews an existing search_id. Cache-only never schedules refresh. Provider tests add isolated, explicitly selected X-Byte/FoodSpark and Northfork reads plus synthetic Actowiz schema fixtures. They never fall back or issue shopping quotes. Live tests require a dedicated token, enable flag and separate persistent read allowance. MealMe/Satsuma and the Vercel Kroger/Square adapters are retired. Normal shopping search prefers X-Byte/FoodSpark only with configured server access, a retailer slug and a full address; otherwise it uses browser discovery. X-Byte errors never trigger fallback. Legacy comparison fetches through the browser but can reuse cached X-Byte observations with their original source provenance. Catalog all excludes retired sources. Explicit retired-provider selections return HTTP 410 provider_removed. Version 0.10.1 explicitly documents existing partial/cache-miss/job/savings and operational envelopes without changing their wire field types. /health is liveness; /ready checks storage only."
   },
   "servers": [
@@ -1792,7 +1792,7 @@
           "Checkout"
         ],
         "summary": "List Northfork-enabled grocery stores for a ZIP",
-        "description": "Returns the Northfork retailers and store locations enabled for this account and ZIP. This is Northfork checkout discovery, not X-Byte store discovery; returned data does not verify a physical branch or serviceability.",
+        "description": "Returns the Northfork retailers and store locations enabled for this account and ZIP. Instacart-backed stores are allowed for Schnucks and other eligible retailers. Walmart, Kroger and Target require direct Northfork provider rows; Instacart-backed rows for those chains are omitted.",
         "parameters": [
           {
             "name": "zip",
@@ -1819,7 +1819,7 @@
                     "store_branch_verified",
                     "retailer_scope",
                     "checkout_available",
-                    "excluded_instacart_store_count"
+                    "excluded_instacart_direct_only_store_count"
                   ],
                   "properties": {
                     "stores": {
@@ -1859,16 +1859,16 @@
                       "const": false
                     },
                     "retailer_scope": {
-                      "const": "enabled_non_instacart_northfork_retailers"
+                      "const": "all_enabled_northfork_retailers_with_big_three_direct_only"
                     },
                     "checkout_available": {
                       "type": "boolean",
-                      "description": "False when no direct retailer integration is enabled for this ZIP."
+                      "description": "False when no allowed provider/store integration is enabled for this ZIP."
                     },
-                    "excluded_instacart_store_count": {
+                    "excluded_instacart_direct_only_store_count": {
                       "type": "integer",
                       "minimum": 0,
-                      "description": "Instacart-backed candidates excluded from checkout."
+                      "description": "Instacart-backed Walmart, Kroger or Target rows omitted because those retailers require direct Northfork integration."
                     }
                   }
                 }
@@ -2014,7 +2014,7 @@
             }
           },
           "409": {
-            "description": "Search expired, unsupported source, Instacart disabled, or retailer/store mismatch"
+            "description": "Search expired, unsupported source, direct provider required for Walmart/Kroger/Target, or retailer/store mismatch"
           },
           "422": {
             "description": "Invalid product selection"
@@ -2161,7 +2161,7 @@
             "description": "Invalid candidate selection"
           },
           "502": {
-            "description": "Northfork did not return a valid direct retailer cart handoff URL; Instacart URLs are rejected"
+            "description": "Northfork did not return a valid HTTPS retailer cart handoff URL"
           },
           "429": {
             "description": "Checkout rate limit exceeded"

@@ -7,6 +7,7 @@ the 302 and never places an order.
 """
 import json
 import os
+import re
 import socket
 import threading
 import time
@@ -19,6 +20,7 @@ import deadline
 BASE = 'https://api.northfork.se'
 MAX_RESPONSE_BYTES = 1_000_000
 REQUEST_TIMEOUT_SECONDS = 30
+DIRECT_NORTHFORK_ONLY_RETAILERS = frozenset({'walmart', 'kroger', 'target'})
 
 
 class CheckoutError(Exception):
@@ -148,10 +150,8 @@ def retailer_handoff_url(value):
         return False
     try:
         parsed = urlsplit(value)
-        host = (parsed.hostname or '').casefold()
-        return (parsed.scheme == 'https' and bool(host) and not parsed.username
-                and not parsed.password and host != 'instacart.com'
-                and not host.endswith('.instacart.com'))
+        return (parsed.scheme == 'https' and bool(parsed.hostname)
+                and not parsed.username and not parsed.password)
     except ValueError:
         return False
 
@@ -169,26 +169,33 @@ class CheckoutSessions:
     def _text(value):
         return ' '.join(value.split()) if isinstance(value, str) else ''
 
+    @classmethod
+    def _direct_northfork_only(cls, retailer_key, name=''):
+        tokens = re.findall(r'[a-z0-9]+', f'{cls._text(retailer_key)} {cls._text(name)}'.casefold())
+        return bool(DIRECT_NORTHFORK_ONLY_RETAILERS.intersection(tokens) or any(
+            tokens[index:index + 2] == ['wal', 'mart'] for index in range(len(tokens) - 1)))
+
     def discover_stores(self, zip_code):
         payload = self.client_factory().stores(zip_code)
         data = payload.get('data')
         if not isinstance(data, list):
             raise CheckoutError('invalid_provider_response', 'Northfork did not return a store list.', 502)
-        stores, excluded_instacart = [], 0
+        stores, excluded_instacart_direct_only = [], 0
         for store in data:
             if (isinstance(store, dict) and self._text(store.get('provider'))
                     and str(store.get('identifier', '')).strip()
                     and self._text(store.get('name'))
                     and self._text(store.get('retailer_key'))):
-                if self._text(store.get('provider')).casefold() == 'instacart':
-                    excluded_instacart += 1
+                if (self._text(store.get('provider')).casefold() == 'instacart'
+                        and self._direct_northfork_only(store.get('retailer_key'), store.get('name'))):
+                    excluded_instacart_direct_only += 1
                     continue
                 stores.append(safe_store(store, zip_code))
         return {'stores': stores, 'zip': zip_code, 'source_provider': 'northfork',
                 'purpose': 'checkout_store_candidates',
-                'retailer_scope': 'enabled_non_instacart_northfork_retailers',
+                'retailer_scope': 'all_enabled_northfork_retailers_with_big_three_direct_only',
                 'checkout_available': bool(stores),
-                'excluded_instacart_store_count': excluded_instacart,
+                'excluded_instacart_direct_only_store_count': excluded_instacart_direct_only,
                 'store_branch_verified': False}
 
     def resolve(self, search_results, request):
@@ -203,8 +210,6 @@ class CheckoutSessions:
             raise CheckoutError('invalid_request', 'Send 1–60 selected product lines.', 422)
         if not isinstance(store_id, str) or not store_id.strip() or not store_provider:
             raise CheckoutError('invalid_request', 'Choose a store_id and store_provider returned by checkout store discovery.', 422)
-        if store_provider.casefold() == 'instacart':
-            raise CheckoutError('unsupported_retailer', 'Instacart checkout is disabled; choose a direct Northfork retailer integration.', 409)
         products = {item.get('id'): item for item in search_results.get('items', []) if isinstance(item, dict)}
         chosen, seen = [], set()
         retailer = None
@@ -227,12 +232,18 @@ class CheckoutSessions:
             chosen.append({'item_id': item_id, 'quantity': quantity, 'item': item})
             seen.add(item_id)
 
+        if (store_provider.casefold() == 'instacart'
+                and self._direct_northfork_only(retailer)):
+            raise CheckoutError('direct_provider_required',
+                                'Walmart, Kroger and Target must use their direct Northfork checkout integration.', 409)
+
         store_payload = client.stores(zip_code)
         store_rows = store_payload.get('data')
         if not isinstance(store_rows, list):
             raise CheckoutError('invalid_provider_response', 'Northfork did not return a store list.', 502)
         matching = [s for s in store_rows if isinstance(s, dict)
-                    and self._text(s.get('provider')).casefold() != 'instacart'
+                    and not (self._text(s.get('provider')).casefold() == 'instacart'
+                             and self._direct_northfork_only(s.get('retailer_key'), s.get('name')))
                     and self._text(s.get('provider')).casefold() == store_provider.casefold()
                     and str(s.get('identifier')) == store_id
                     and self._text(s.get('retailer_key')).casefold() == retailer.casefold()]
