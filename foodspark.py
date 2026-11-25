@@ -30,7 +30,16 @@ def search_live(zip_code, queries, retailer, allow, browser_search):
 
     # Suppliers can acknowledge the street (including unit) or the complete
     # address we sent. Accept only those exact contexts, ignoring case/spacing.
-    normalize_address = lambda value: ' '.join(str(value or '').split()).casefold()
+    def normalize_address(value):
+        tokens = re.findall(r'[a-z0-9]+', str(value or '').casefold())
+        aliases = {'ctr': 'center', 'centre': 'center', 'rd': 'road', 'ave': 'avenue',
+                   'blvd': 'boulevard', 'dr': 'drive', 'ln': 'lane', 'hwy': 'highway'}
+        normalized = []
+        for index, token in enumerate(tokens):
+            if token == 'st':
+                token = 'saint' if index + 1 < len(tokens) and tokens[index + 1] == 'louis' else 'street'
+            normalized.append(aliases.get(token, token))
+        return ' '.join(normalized)
     street_address = ', '.join(filter(None, (address['line1'], address.get('line2'))))
     full_address = ', '.join((street_address, address['city'], address['region'] + ' ' + zip_code))
     expected_addresses = {normalize_address(street_address), normalize_address(full_address)}

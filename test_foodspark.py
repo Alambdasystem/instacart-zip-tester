@@ -121,6 +121,16 @@ class FoodSparkRoutingTests(unittest.TestCase):
         self.assertEqual(result['items'][0]['source_provider'], 'xbyte_foodspark')
         self.browser.assert_not_called()
 
+
+    def test_address_acknowledgment_normalizes_punctuation_and_common_abbreviations(self):
+        self.raw['response']['store_details']['Delivery Address'] = '100 Test St., Test City, MO 63129'
+        with patch.dict(os.environ, {'FOODSPARK_API_KEY': 'synthetic-xbyte-key'}), \
+                patch.object(foodspark, 'build_opener') as factory:
+            factory.return_value.open.side_effect = self.response
+            result = foodspark.search_live('63129', ['milk'], 'aldi', False, self.browser)
+        self.assertTrue(result['location']['verified'])
+        self.assertEqual(result['items'][0]['source_provider'], 'xbyte_foodspark')
+
     def test_unit_must_be_acknowledged_in_street_or_full_address(self):
         self.location['address']['line2'] = 'Unit 2'
         set_location(deepcopy(self.location))
