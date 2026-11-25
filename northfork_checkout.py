@@ -98,9 +98,22 @@ class NorthforkClient:
             raise CheckoutError('provider_unavailable', 'Northfork could not be reached.', 502) from None
 
     def stores(self, zip_code):
-        # Northfork requires the explicit `all` selector; omitting `providers`
-        # returns no retailer rows for this account. Pagination is required.
-        return self._request('/api/stores', {'providers': 'all', 'offset': 0, 'limit': 100, 'zip': zip_code})
+        # Northfork requires explicit `providers=all`; omitting providers can
+        # return no rows. Its documented page size is 10, so walk every page.
+        rows = []
+        page_size = 10
+        for page in range(50):
+            payload = self._request('/api/stores', {
+                'providers': 'all', 'offset': page * page_size,
+                'limit': page_size, 'zip': zip_code,
+            })
+            data = payload.get('data') if isinstance(payload, dict) else None
+            if not isinstance(data, list):
+                return payload
+            rows.extend(data)
+            if len(data) < page_size:
+                return {'data': rows}
+        return {'data': rows, 'pagination_truncated': True}
 
     def resolve(self, store, ingredients):
         return self._request('/api/smart-cart/ingredients/resolve', body={

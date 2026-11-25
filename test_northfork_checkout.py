@@ -48,7 +48,7 @@ class NorthforkCheckoutTests(unittest.TestCase):
         with patch('northfork_checkout.build_opener', return_value=opener):
             NorthforkClient(api_key='test-token').stores('63129')
         self.assertEqual(parse_qs(urlsplit(opener.request.full_url).query),
-                         {'providers': ['all'], 'offset': ['0'], 'limit': ['100'], 'zip': ['63129']})
+                         {'providers': ['all'], 'offset': ['0'], 'limit': ['10'], 'zip': ['63129']})
 
     def test_complete_resolve_to_selected_retailer_handoff(self):
         stores = self.checkout.discover_stores('63129')
