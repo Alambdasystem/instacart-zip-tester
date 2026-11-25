@@ -6,16 +6,16 @@ from northfork_checkout import CheckoutError, CheckoutSessions, NorthforkClient,
 
 
 class FakeNorthfork:
-    def __init__(self, store_id='1727', retailer='schnucks', redirect='https://www.schnucks.com/cart?transfer=demo'):
-        self.store_id, self.retailer, self.redirect = store_id, retailer, redirect
+    def __init__(self, store_id='1727', retailer='schnucks', provider='schnucks-online', redirect='https://www.schnucks.com/cart?transfer=demo'):
+        self.store_id, self.retailer, self.provider, self.redirect = store_id, retailer, provider, redirect
         self.pushed = None
 
     def stores(self, zip_code):
-        return {'data': [{'identifier': self.store_id, 'provider': 'schnucks-online', 'name': 'Schnucks',
+        return {'data': [{'identifier': self.store_id, 'provider': self.provider, 'name': 'Schnucks',
                           'retailer_key': self.retailer, 'zip': zip_code}]}
 
     def resolve(self, store, ingredients):
-        return {'data': {'store': {'identifier': store['identifier'], 'provider': 'schnucks-online'}, 'ingredients': [
+        return {'data': {'store': {'identifier': store['identifier'], 'provider': self.provider}, 'ingredients': [
             {'name': entry['name'], 'products': [{'id': 20653045, 'external_id': '20653045',
                 'name': 'Whole Milk', 'brand': 'Schnucks', 'price': 399, 'currency_code': 'USD',
                 'size': '1 gal', 'in_stock': True}]} for entry in ingredients]}}
@@ -54,7 +54,9 @@ class NorthforkCheckoutTests(unittest.TestCase):
         stores = self.checkout.discover_stores('63129')
         self.assertEqual(stores['source_provider'], 'northfork')
         self.assertEqual(stores['stores'][0]['identifier'], '1727')
-        self.assertEqual(stores['retailer_scope'], 'all_enabled_northfork_retailers')
+        self.assertEqual(stores['retailer_scope'], 'enabled_non_instacart_northfork_retailers')
+        self.assertTrue(stores['checkout_available'])
+        self.assertEqual(stores['excluded_instacart_store_count'], 0)
         resolved = self.checkout.resolve(self.search, {'store_id': '1727', 'store_provider': 'schnucks-online', 'lines': [{'item_id': 'xbyte-milk', 'quantity': 2}]})
         self.assertEqual(resolved['status'], 'products_resolved')
         self.assertFalse(resolved['cart_updated'])
@@ -68,6 +70,18 @@ class NorthforkCheckoutTests(unittest.TestCase):
         self.assertFalse(handoff['cart_updated'])
         self.assertFalse(handoff['order_placed'])
         self.assertEqual(self.client.pushed[1:], ('63129', [('20653045', 2)]))
+
+
+    def test_instacart_rows_are_excluded_and_cannot_be_selected(self):
+        self.client.provider = 'instacart'
+        stores = self.checkout.discover_stores('63129')
+        self.assertEqual(stores['stores'], [])
+        self.assertFalse(stores['checkout_available'])
+        self.assertEqual(stores['excluded_instacart_store_count'], 1)
+        with self.assertRaises(CheckoutError) as error:
+            self.checkout.resolve(self.search, {'store_id': '1727', 'store_provider': 'instacart',
+                                                'lines': [{'item_id': 'xbyte-milk'}]})
+        self.assertEqual(error.exception.code, 'unsupported_retailer')
 
     def test_rejects_wrong_retailer_store(self):
         self.client.retailer = 'walmart'
@@ -98,6 +112,7 @@ class NorthforkCheckoutTests(unittest.TestCase):
         self.assertFalse(retailer_handoff_url('javascript:alert(1)'))
         self.assertFalse(retailer_handoff_url('https://user:pass@shop.example/cart'))
         self.assertTrue(retailer_handoff_url('https://shop.example/cart'))
+        self.assertFalse(retailer_handoff_url('https://www.instacart.com/store/cart'))
 
     def test_handoff_is_one_shot(self):
         resolved = self.checkout.resolve(self.search, {'store_id': '1727', 'store_provider': 'schnucks-online', 'lines': [{'item_id': 'xbyte-milk'}]})
