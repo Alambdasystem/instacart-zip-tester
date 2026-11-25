@@ -10,10 +10,14 @@ CATALOG_PROVIDERS = ('instacart',)
 CAPABILITIES = {
     'instacart': {'kind': 'grocery_discovery', 'location_inputs': ['zip', 'address'],
                  'address_acknowledgment_required': True, 'delivery_verified': False,
-                 'cart': 'local_app_only'},
+                 'cart': 'northfork_handoff'},
     'xbyte_foodspark': {'kind': 'grocery_discovery', 'location_inputs': ['address'],
                        'retailer_required': True, 'address_acknowledgment_required': True,
-                       'delivery_verified': False, 'cart': 'local_app_only'},
+                       'zip_store_discovery': False, 'delivery_verified': False,
+                       'cart': 'northfork_handoff'},
+    'northfork': {'kind': 'checkout_handoff', 'checkout_marketplaces': ['instacart'],
+                  'routes': ['/api/v1/checkout/stores', '/api/v1/checkout/resolve', '/api/v1/checkout/handoff'],
+                  'order_placement': False},
 }
 
 
@@ -31,5 +35,7 @@ def routing_status():
         'requires': ['retailer', 'location.address'],
         'otherwise': 'instacart_browser', 'on_primary_error': 'error_no_fallback',
         'comparison': 'instacart_browser', 'background_ingestion': 'instacart_browser',
+        'checkout_provider': 'northfork',
+        'checkout_routes': ['/api/v1/checkout/stores', '/api/v1/checkout/resolve', '/api/v1/checkout/handoff'],
         'provider_test_route': '/api/v1/provider-tests/search',
     }

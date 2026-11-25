@@ -22,6 +22,7 @@ from isolated_runner import search_browser, stop_all
 from foodspark import search_live
 from savings import calculate as calculate_savings, SavingsError
 from provider_tests import ProviderTests, TestRequestError
+from northfork_checkout import CheckoutError, CheckoutSessions
 from provider_registry import CATALOG_PROVIDERS, COMPARISON_PROVIDERS, RETIRED_PROVIDERS, source_provider
 
 ROOT = Path(__file__).parent
@@ -41,6 +42,7 @@ JOBS=SearchJobs()
 RATE_LOCK=threading.Lock()
 COMPARISON = Comparison(CATALOG,CACHE,LOCK,lambda *a: search_browser(*a))
 PROVIDER_TESTS = ProviderTests(Path(CATALOG.path).parent/'provider-test-budget.sqlite3')
+CHECKOUTS = CheckoutSessions()
 
 def validate(data):
     if not isinstance(data, dict): raise ValueError('Expected a JSON object.')
@@ -56,6 +58,15 @@ def validate(data):
     flag = data.get('allow_unverified_location', False)
     if type(flag) is not bool: raise ValueError('allow_unverified_location must be boolean.')
     return z, list(dict.fromkeys(q.strip() for q in qs)), retailer, flag
+
+def checkout_rate_limited(handler):
+    client='checkout:'+hashlib.sha256(handler.client_address[0].encode()).hexdigest()
+    now=time.time()
+    with RATE_LOCK:
+        RATE[client]=[t for t in RATE.get(client,[]) if now-t<60]
+        if len(RATE[client])>=10:return True
+        RATE[client].append(now)
+    return False
 
 SPEC = json.loads((ROOT/'openapi.json').read_text())
 
@@ -79,6 +90,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         route=urlsplit(self.path)
         if route.path=='/api/v1/provider-tests/status':return self.send(200,PROVIDER_TESTS.status())
+        if route.path=='/api/v1/checkout/stores':
+            params=parse_qs(route.query);z=params.get('zip',[''])[0]
+            if not re.fullmatch(r'[0-9]{5}',z):return self.send(422,{'error':'invalid_request','message':'Supply a five-digit ZIP code.'})
+            if checkout_rate_limited(self):return self.send(429,{'error':'rate_limited','message':'Checkout store discovery is limited to ten requests per minute.'})
+            try:return self.send(200,CHECKOUTS.discover_stores(z))
+            except CheckoutError as e:return self.send(e.http_status,{'error':e.code,'message':e.message,**({'details':e.details} if e.details else {})})
         if route.path=='/provider-lab':
             self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff');self.end_headers();self.wfile.write((ROOT/'provider-lab.html').read_bytes());return
         if route.path.startswith('/api/v1/search/jobs/'):
@@ -140,6 +157,21 @@ class Handler(BaseHTTPRequestHandler):
                     code,outcome=PROVIDER_TESTS.run(data,self.headers.get('Authorization',''),comparison=self.path.endswith('/compare'))
                     return self.send(code,outcome)
                 except TestRequestError as e:return self.send(e.http_status,{'error':e.code,'message':e.message})
+            if self.path=='/api/v1/checkout/resolve':
+                if set(data)-{'search_id','store_id','lines'} or not isinstance(data.get('search_id'),str):
+                    return self.send(422,{'error':'invalid_request','message':'Send search_id, store_id and selected lines.'})
+                if checkout_rate_limited(self):return self.send(429,{'error':'rate_limited','message':'Northfork checkout is limited to ten requests per minute.'})
+                result=RESULTS.get(data['search_id'])
+                if not result or time.time()>=result.get('expires',result['created']+300):
+                    return self.send(409,{'error':'search_expired','message':'Search again; results expire after five minutes.'})
+                try:return self.send(200,CHECKOUTS.resolve(result['payload'],data))
+                except CheckoutError as e:return self.send(e.http_status,{'error':e.code,'message':e.message,**({'details':e.details} if e.details else {})})
+            if self.path=='/api/v1/checkout/handoff':
+                if set(data)-{'checkout_id','items'} or not isinstance(data.get('checkout_id'),str):
+                    return self.send(422,{'error':'invalid_request','message':'Send checkout_id and selected Northfork items.'})
+                if checkout_rate_limited(self):return self.send(429,{'error':'rate_limited','message':'Northfork checkout is limited to ten requests per minute.'})
+                try:return self.send(200,CHECKOUTS.handoff(data['checkout_id'],data.get('items')))
+                except CheckoutError as e:return self.send(e.http_status,{'error':e.code,'message':e.message,**({'details':e.details} if e.details else {})})
             if self.path.startswith('/api/v1/search/jobs/') and self.path.endswith('/cancel'):
                 key=self.path.split('/')[-2]
                 if data!={}:raise ValueError('Cancellation body must be empty.')

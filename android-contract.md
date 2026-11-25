@@ -1,4 +1,4 @@
-# Neadz / InstaSearch API Contract v0.10.1
+# Neadz / InstaSearch API Contract v0.11.0
 
 Base URL: `https://alambda-grocery-api.onrender.com`
 
@@ -7,7 +7,7 @@ Base URL: `https://alambda-grocery-api.onrender.com`
 - [Hosted Android contract](https://alambda-grocery-api.onrender.com/android-contract.md)
 - [Neadz migration handoff](https://github.com/Alambdasystem/instacart-zip-tester/blob/main/neadz-migration-0.10.1.md)
 
-This document describes the current wire contract. Version 0.10.1 explicitly types existing search variants, jobs, savings and operational responses; it does not rename their fields or change JSON number/boolean/string types. All POST bodies are UTF-8 JSON objects with `Content-Type: application/json`, between 1 and 10,000 bytes. JSON responses include `X-Request-ID`; retain it with the app build and HTTP status when diagnosing a failure, without logging credentials or full addresses.
+This document describes the current wire contract. Version 0.11.0 adds the checkout handoff routes; the 0.10.1 contract explicitly typed existing search variants, jobs, savings and operational responses; it does not rename their fields or change JSON number/boolean/string types. All POST bodies are UTF-8 JSON objects with `Content-Type: application/json`, between 1 and 10,000 bytes. JSON responses include `X-Request-ID`; retain it with the app build and HTTP status when diagnosing a failure, without logging credentials or full addresses.
 
 ## Provider routing and provenance
 
@@ -114,6 +114,18 @@ Catalog and export use `provider=instacart` by default or `all` for the allowed 
 An expired catalog item's numeric `price` remains historical; it is **not automatically erased or changed to null**. `last_seen_price`, `price_status`, `price_fresh`, `age_seconds` and `last_seen` describe its history. Only `selectable:true` catalog items are included in the server snapshot behind the returned catalog `search_id`. A response with no selectable items still has a display ID but cannot validate selections. `local_offer_eligible` additionally requires verified primary charge-unit evidence; catalog `selectable` alone does not establish savings eligibility.
 
 Catalog metadata includes nullable `brand`, `provider_location_id` and `fulfillment`, opaque `catalog_key` and `product_key`, and boolean `context_compatible`, `branch_verified` and `delivery_verified`. Do not replace item IDs with storage keys. The catalog is bounded discovery data, not complete inventory.
+
+## X-Byte to Northfork checkout handoff
+
+The intended product flow is retailer-first X-Byte grocery search, product selection, Northfork product resolution for the selected Instacart checkout store, then a browser handoff to the third-party cart. X-Byte remains the source of the initial grocery product observations. The currently documented X-Byte grocery search requires `retailer` plus a complete street address and yields one store context; X-Byte ZIP-only store discovery is not present in the delivered grocery API docs. `GET /api/v1/checkout/stores?zip=63129` returns Northfork Instacart checkout candidates, clearly labeled with `source_provider: "northfork"`; it is not a replacement or claim of X-Byte store discovery.
+
+1. Run `/api/v1/search` with the chosen retailer slug and address. Keep `search_id`, `item.id`, `item.source_provider`, `item.retailer`, product name/brand/size, and ZIP. Checkout requires `source_provider: "xbyte_foodspark"`; browser-observed or cached Instacart products cannot be passed as X-Byte results.
+2. List candidate Northfork checkout stores with `GET /api/v1/checkout/stores?zip=<ZIP>`. The chosen store must match the X-Byte retailer and ZIP. Store IDs are provider-specific; never pass an X-Byte store/location ID as a Northfork store ID.
+3. Resolve with `POST /api/v1/checkout/resolve`: `{"search_id":"<search_id>","store_id":"<Northfork store identifier>","lines":[{"item_id":"<X-Byte item.id>","quantity":1}]}`. The response includes a short-lived `checkout_id` and Northfork candidate products for each X-Byte selection. It does not update a cart.
+4. The shopper chooses one Northfork candidate per line, then calls `POST /api/v1/checkout/handoff` with `{"checkout_id":"<checkout_id>","items":[{"item_id":"<X-Byte item.id>","product_id":"<Northfork candidate id>","quantity":1}]}`.
+5. Open the returned `handoff_url` in the browser. Northfork returns an Instacart redirect for sign-in/authorization and populates the third-party cart. This API does not follow the redirect and does not place an order. `handoff_started:true` means Northfork returned a redirect; `cart_updated:false` remains explicit until the shopper signs in and verifies the final cart. The shopper must inspect the Instacart cart before checkout.
+
+Northfork API access is held in server configuration (`NORTHFORK_API_KEY`). Never put vendor credentials in the mobile app. X-Byte store discovery remains a vendor contract dependency; do not present the Northfork candidate list as X-Byte discovery.
 
 ## Selection, cart and savings
 

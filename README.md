@@ -1,6 +1,6 @@
 # Alambda Grocery ZIP Lab
 
-The Docker application runs `api_server.py`: a grocery search API, retained catalog, bounded background queue, API workbench and local app cart. The current contract is **v0.10.1**. The original `server.py` remains a separate legacy link tester.
+The Docker application runs `api_server.py`: a grocery search API, retained catalog, bounded background queue, API workbench and local app cart. The current contract is **v0.11.0**. The original `server.py` remains a separate legacy link tester.
 
 ## Neadz integration
 
@@ -9,7 +9,7 @@ The Docker application runs `api_server.py`: a grocery search API, retained cata
 - [Neadz 0.10.1 migration handoff](neadz-migration-0.10.1.md): provider removal, precise DTO/error/polling rules, examples and the remaining live acceptance gate.
 - [Interactive documentation](https://alambda-grocery-api.onrender.com/docs), [API workbench](https://alambda-grocery-api.onrender.com/) and [isolated supplier lab](https://alambda-grocery-api.onrender.com/provider-lab).
 
-Version 0.10.1 fills contract gaps for existing `partial`/`cache_miss` search results, nullable job results/errors, savings, readiness, routing and ingestion status. Existing wire types are retained. Small runtime fixes accept faithful normalized full-address X-Byte acknowledgments, report shared deadlines as `provider_timeout`, and require literal boolean `acknowledge:true` for operator recovery. These checks do not establish live supplier success.
+Version 0.11.0 adds the X-Byte-to-Northfork product resolution and Instacart cart-handoff contract. The 0.10.1 release filled gaps for existing `partial`/`cache_miss` search results, nullable job results/errors, savings, readiness, routing and ingestion status. Existing wire types are retained. Small runtime fixes accept faithful normalized full-address X-Byte acknowledgments, report shared deadlines as `provider_timeout`, and require literal boolean `acknowledge:true` for operator recovery. These checks do not establish live supplier success.
 
 ## Current provider policy
 
@@ -20,6 +20,7 @@ MealMe, Satsuma and the Vercel Kroger/Square adapters were removed in 0.10.0. Th
 | `/api/v1/search` and `/api/v1/search/jobs` | Fresh fetches use X-Byte/FoodSpark when the server key, retailer slug and full address are present; otherwise Instacart browser discovery. An X-Byte error does not switch providers. Fresh exact snapshots can satisfy the request first. |
 | `/api/v1/compare` | Only `providers:["instacart"]` is supported/defaulted. Fresh fetches use the browser; shared cache/catalog observations retain their actual source, including X-Byte. Results are not selectable shopping quotes. |
 | `/api/v1/provider-tests/search` and `/compare` | Explicit isolated X-Byte and Northfork reads, plus Actowiz fixtures. These tests do not populate shopping/cart state or become automatic fallback. Actowiz live keyword search is unsupported. |
+| `/api/v1/checkout/stores`, `/resolve`, `/handoff` | Northfork checkout-store candidates, product remapping from a live X-Byte search, then a validated Instacart cart handoff. The API returns the provider redirect without following it or placing an order. |
 | Background ingestion | Bounded Instacart browser collection. |
 
 Configure `FOODSPARK_API_KEY` on the server and send a retailer slug plus `location.address` (`line1`, `city`, `region`, optional `line2`) with a five-digit ZIP to select X-Byte for a new normal shopping fetch. ZIP-only or missing-retailer requests use browser discovery. Both shopping routes retain the `CONNECTOR_ENABLED` gate. Supplier secrets do not belong in the APK or browser.
@@ -45,7 +46,7 @@ Shopping requests require `query` or `queries` (1–3 nonblank terms, at most 12
 
 `auto` checks fresh exact snapshots and fetches misses. `cache_only` never fetches or schedules refresh. `refresh` requests a fresh snapshot; concurrent refreshes may coalesce. On synchronous `/search`, legacy `live` and `catalog` are cache-first aliases of `auto`. On `/compare`, `catalog` means stored discovery-only. Do not interchange these endpoint-specific meanings.
 
-Cart state remains in the app. Selection/cart responses never mutate a provider basket; `cart_updated` and `provider_cart_updated` remain false. Savings requires matching product identity/name/size, acknowledged location/context, verified per-item charge basis, USD, no unvalidated promotion and unexpired prices. It covers observed merchandise prices, excluding taxes, fees, delivery and checkout verification.
+The local `/api/v1/cart` remains app-owned. Northfork checkout is a separate explicit two-step flow: `/checkout/resolve` validates a live X-Byte selection and maps product names to Northfork IDs for a selected Northfork store; `/checkout/handoff` sends the shopper-selected Northfork IDs/quantities to Northfork and returns its Instacart URL. The browser must open that URL; the shopper signs in and reviews the transferred products. No order is placed by this API. X-Byte's current documented grocery search requires a retailer slug and full address and returns one store context; its ZIP-only grocery store-discovery endpoint is not yet documented. `/checkout/stores` therefore lists Northfork checkout candidates, not X-Byte store discovery. Selection/local-cart responses still do not mutate a provider basket. Savings requires matching product identity/name/size, acknowledged location/context, verified per-item charge basis, USD, no unvalidated promotion and unexpired prices. It covers observed merchandise prices, excluding taxes, fees, delivery and checkout verification.
 
 ## Freshness, persistence and location
 

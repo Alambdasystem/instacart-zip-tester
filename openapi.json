@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "InstaSearch API Contract",
-    "version": "0.10.1",
-    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. Local baskets and provider links do not transfer items or place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels. Optional v0.7 freshness scheduling preserves five-minute quote expiry. Catalog descriptions remain browsable with expired prices explicitly labeled; background refresh never renews an existing search_id. Cache-only never schedules refresh. Provider tests add isolated, explicitly selected X-Byte/FoodSpark and Northfork reads plus synthetic Actowiz schema fixtures. They never fall back or issue shopping quotes. Live tests require a dedicated token, enable flag and separate persistent read allowance. MealMe/Satsuma and the Vercel Kroger/Square adapters are retired. Normal shopping search prefers X-Byte/FoodSpark only with configured server access, a retailer slug and a full address; otherwise it uses browser discovery. X-Byte errors never trigger fallback. Legacy comparison fetches through the browser but can reuse cached X-Byte observations with their original source provenance. Catalog all excludes retired sources. Explicit retired-provider selections return HTTP 410 provider_removed. Version 0.10.1 explicitly documents existing partial/cache-miss/job/savings and operational envelopes without changing their wire field types. /health is liveness; /ready checks storage only."
+    "version": "0.11.0",
+    "description": "Public discovery prototype with isolated provider contexts and five-minute persistent exact snapshots. Search-job polling/cancellation requires the per-job bearer token; operator recovery requires server credentials. Quote tokens reset on restart. The local basket is app-owned; explicit Northfork checkout routes can hand selected products to an Instacart cart, but never place orders. Requested ZIP, provider acknowledgment, store branch and delivery serviceability are distinct evidence levels. Optional v0.7 freshness scheduling preserves five-minute quote expiry. Catalog descriptions remain browsable with expired prices explicitly labeled; background refresh never renews an existing search_id. Cache-only never schedules refresh. Provider tests add isolated, explicitly selected X-Byte/FoodSpark and Northfork reads plus synthetic Actowiz schema fixtures. They never fall back or issue shopping quotes. Live tests require a dedicated token, enable flag and separate persistent read allowance. MealMe/Satsuma and the Vercel Kroger/Square adapters are retired. Normal shopping search prefers X-Byte/FoodSpark only with configured server access, a retailer slug and a full address; otherwise it uses browser discovery. X-Byte errors never trigger fallback. Legacy comparison fetches through the browser but can reuse cached X-Byte observations with their original source provenance. Catalog all excludes retired sources. Explicit retired-provider selections return HTTP 410 provider_removed. Version 0.10.1 explicitly documents existing partial/cache-miss/job/savings and operational envelopes without changing their wire field types. /health is liveness; /ready checks storage only."
   },
   "servers": [
     {
@@ -122,7 +122,7 @@
             }
           }
         },
-        "description": "One to three nonblank query strings, maximum 120 characters each; duplicates are trimmed/deduplicated. queries takes precedence over query. A five-digit ZIP is required through zip or location.postal_code. With configured key + retailer + full address, new shopping fetches use X-Byte/FoodSpark; otherwise the browser. No fallback after an X-Byte error. Request bodies are 1\u201310000 UTF-8 JSON bytes. Decode all HTTP 200 variants by status. Both search routes require CONNECTOR_ENABLED on the server; clients do not supply supplier credentials.",
+        "description": "One to three nonblank query strings, maximum 120 characters each; duplicates are trimmed/deduplicated. queries takes precedence over query. A five-digit ZIP is required through zip or location.postal_code. With configured key + retailer + full address, new shopping fetches use X-Byte/FoodSpark; otherwise the browser. No fallback after an X-Byte error. Request bodies are 1–10000 UTF-8 JSON bytes. Decode all HTTP 200 variants by status. Both search routes require CONNECTOR_ENABLED on the server; clients do not supply supplier credentials.",
         "security": []
       }
     },
@@ -565,7 +565,7 @@
               "type": "integer",
               "default": 50
             },
-            "description": "Clamped to 1\u2013100."
+            "description": "Clamped to 1–100."
           }
         ],
         "security": []
@@ -1784,6 +1784,368 @@
           }
         }
       }
+    },
+    "/api/v1/checkout/stores": {
+      "get": {
+        "operationId": "discoverNorthforkCheckoutStores",
+        "tags": [
+          "Checkout"
+        ],
+        "summary": "List Instacart stores Northfork can accept for checkout",
+        "description": "Northfork checkout candidates only. This endpoint does not claim to be X-Byte grocery store discovery and does not verify a physical branch or serviceability.",
+        "parameters": [
+          {
+            "name": "zip",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]{5}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Northfork checkout store candidates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "stores",
+                    "zip",
+                    "source_provider",
+                    "purpose",
+                    "store_branch_verified"
+                  ],
+                  "properties": {
+                    "stores": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "identifier": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "provider": {
+                            "const": "instacart"
+                          },
+                          "retailer_key": {
+                            "type": "string"
+                          },
+                          "zip": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "zip": {
+                      "type": "string"
+                    },
+                    "source_provider": {
+                      "const": "northfork"
+                    },
+                    "purpose": {
+                      "const": "checkout_store_candidates"
+                    },
+                    "store_branch_verified": {
+                      "const": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid ZIP"
+          },
+          "429": {
+            "description": "Checkout rate limit exceeded"
+          }
+        }
+      }
+    },
+    "/api/v1/checkout/resolve": {
+      "post": {
+        "operationId": "resolveNorthforkCheckoutProducts",
+        "tags": [
+          "Checkout"
+        ],
+        "summary": "Resolve selected X-Byte products against a Northfork Instacart store",
+        "description": "Requires a live X-Byte grocery search result and one Northfork checkout store for the same retailer and ZIP. Returns Northfork product candidates; it does not write a cart.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "search_id",
+                  "store_id",
+                  "lines"
+                ],
+                "properties": {
+                  "search_id": {
+                    "type": "string"
+                  },
+                  "store_id": {
+                    "type": "string"
+                  },
+                  "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 60,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "item_id"
+                      ],
+                      "properties": {
+                        "item_id": {
+                          "type": "string"
+                        },
+                        "quantity": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 99
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resolved Northfork candidates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "checkout_id",
+                    "status",
+                    "store",
+                    "lines",
+                    "expires_in",
+                    "cart_updated"
+                  ],
+                  "properties": {
+                    "checkout_id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "const": "products_resolved"
+                    },
+                    "store": {
+                      "type": "object"
+                    },
+                    "lines": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "item_id": {
+                            "type": "string"
+                          },
+                          "source_product": {
+                            "type": "object"
+                          },
+                          "quantity": {
+                            "type": "integer"
+                          },
+                          "candidates": {
+                            "type": "array",
+                            "items": {
+                              "type": "object"
+                            }
+                          },
+                          "recommended_product_id": {
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    },
+                    "expires_in": {
+                      "type": "integer"
+                    },
+                    "cart_updated": {
+                      "const": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Search expired, unsupported source, or retailer/store mismatch"
+          },
+          "422": {
+            "description": "Invalid product selection"
+          },
+          "502": {
+            "description": "Northfork request failed"
+          },
+          "503": {
+            "description": "Northfork not configured"
+          },
+          "429": {
+            "description": "Checkout rate limit exceeded"
+          }
+        }
+      }
+    },
+    "/api/v1/checkout/handoff": {
+      "post": {
+        "operationId": "handoffNorthforkCart",
+        "tags": [
+          "Checkout"
+        ],
+        "summary": "Create an Instacart cart handoff through Northfork",
+        "description": "Transfers the explicitly selected Northfork products and quantities. Returns the Northfork 3xx Location for the app/browser to open. Redirects are not followed and orders are never placed by this API.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "checkout_id",
+                  "items"
+                ],
+                "properties": {
+                  "checkout_id": {
+                    "type": "string"
+                  },
+                  "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 60,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "item_id",
+                        "product_id"
+                      ],
+                      "properties": {
+                        "item_id": {
+                          "type": "string"
+                        },
+                        "product_id": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "integer"
+                            }
+                          ]
+                        },
+                        "quantity": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 99
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Third-party cart handoff ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "checkout_id",
+                    "status",
+                    "provider",
+                    "marketplace",
+                    "store",
+                    "item_count",
+                    "handoff_url",
+                    "redirect_status",
+                    "handoff_started",
+                    "cart_updated",
+                    "order_placed"
+                  ],
+                  "properties": {
+                    "checkout_id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "const": "handoff_ready"
+                    },
+                    "provider": {
+                      "const": "northfork"
+                    },
+                    "marketplace": {
+                      "const": "instacart"
+                    },
+                    "store": {
+                      "type": "object"
+                    },
+                    "item_count": {
+                      "type": "integer"
+                    },
+                    "handoff_url": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "redirect_status": {
+                      "type": "integer"
+                    },
+                    "cart_updated": {
+                      "const": false
+                    },
+                    "order_placed": {
+                      "const": false
+                    },
+                    "instructions": {
+                      "type": "string"
+                    },
+                    "handoff_started": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Expired or already-used checkout"
+          },
+          "422": {
+            "description": "Invalid candidate selection"
+          },
+          "502": {
+            "description": "Northfork did not return an Instacart handoff"
+          },
+          "429": {
+            "description": "Checkout rate limit exceeded"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2244,7 +2606,7 @@
             }
           }
         ],
-        "description": "One to three nonblank query strings, maximum 120 characters each; duplicates are trimmed/deduplicated. queries takes precedence over query. A five-digit ZIP is required through zip or location.postal_code. With configured key + retailer + full address, new shopping fetches use X-Byte/FoodSpark; otherwise the browser. No fallback after an X-Byte error. Request bodies are 1\u201310000 UTF-8 JSON bytes.",
+        "description": "One to three nonblank query strings, maximum 120 characters each; duplicates are trimmed/deduplicated. queries takes precedence over query. A five-digit ZIP is required through zip or location.postal_code. With configured key + retailer + full address, new shopping fetches use X-Byte/FoodSpark; otherwise the browser. No fallback after an X-Byte error. Request bodies are 1–10000 UTF-8 JSON bytes.",
         "additionalProperties": false,
         "allOf": [
           {
@@ -2457,7 +2819,7 @@
             "default": []
           }
         },
-        "description": "Local cart validation. Omitted lines and an empty array both produce an empty cart response. Reject duplicate (search_id,item_id) pairs; quantities are integer 1\u201399. No server basket is persisted."
+        "description": "Local cart validation. Omitted lines and an empty array both produce an empty cart response. Reject duplicate (search_id,item_id) pairs; quantities are integer 1–99. No server basket is persisted."
       },
       "CartProduct": {
         "allOf": [
@@ -4567,7 +4929,7 @@
             }
           }
         ],
-        "description": "One to three nonblank query strings, maximum 120 characters each; duplicates are trimmed/deduplicated. queries takes precedence over query. A five-digit ZIP is required through zip or location.postal_code. With configured key + retailer + full address, new shopping fetches use X-Byte/FoodSpark; otherwise the browser. No fallback after an X-Byte error. Request bodies are 1\u201310000 UTF-8 JSON bytes.",
+        "description": "One to three nonblank query strings, maximum 120 characters each; duplicates are trimmed/deduplicated. queries takes precedence over query. A five-digit ZIP is required through zip or location.postal_code. With configured key + retailer + full address, new shopping fetches use X-Byte/FoodSpark; otherwise the browser. No fallback after an X-Byte error. Request bodies are 1–10000 UTF-8 JSON bytes.",
         "additionalProperties": false,
         "allOf": [
           {
