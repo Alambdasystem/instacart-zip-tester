@@ -9,7 +9,7 @@ The Docker application runs `api_server.py`: a grocery search API, retained cata
 - [Neadz 0.10.1 migration handoff](neadz-migration-0.10.1.md): provider removal, precise DTO/error/polling rules, examples and the remaining live acceptance gate.
 - [Interactive documentation](https://alambda-grocery-api.onrender.com/docs), [API workbench](https://alambda-grocery-api.onrender.com/) and [isolated supplier lab](https://alambda-grocery-api.onrender.com/provider-lab).
 
-Version 0.12.0 makes Northfork checkout retailer-neutral: discover Northfork-enabled stores by ZIP, resolve against the selected retailer/store, and open that retailer’s handoff URL. The 0.10.1 release filled gaps for existing `partial`/`cache_miss` search results, nullable job results/errors, savings, readiness, routing and ingestion status. Existing wire types are retained. Small runtime fixes accept faithful normalized full-address X-Byte acknowledgments, report shared deadlines as `provider_timeout`, and require literal boolean `acknowledge:true` for operator recovery. These checks do not establish live supplier success.
+Version 0.12.1 makes Northfork checkout retailer-neutral: discover Northfork-enabled stores by ZIP, resolve against the selected retailer/store, and open that retailer’s handoff URL. The 0.10.1 release filled gaps for existing `partial`/`cache_miss` search results, nullable job results/errors, savings, readiness, routing and ingestion status. Existing wire types are retained. Small runtime fixes accept faithful normalized full-address X-Byte acknowledgments, report shared deadlines as `provider_timeout`, and require literal boolean `acknowledge:true` for operator recovery. These checks do not establish live supplier success.
 
 ## Current provider policy
 

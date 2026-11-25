@@ -98,9 +98,9 @@ class NorthforkClient:
             raise CheckoutError('provider_unavailable', 'Northfork could not be reached.', 502) from None
 
     def stores(self, zip_code):
-        # Omitting `providers` asks Northfork for the full retailer set enabled
-        # for this account, rather than constraining discovery to one marketplace.
-        return self._request('/api/stores', {'zip': zip_code})
+        # Northfork requires the explicit `all` selector; omitting `providers`
+        # returns no retailer rows for this account. Pagination is required.
+        return self._request('/api/stores', {'providers': 'all', 'offset': 0, 'limit': 100, 'zip': zip_code})
 
     def resolve(self, store, ingredients):
         return self._request('/api/smart-cart/ingredients/resolve', body={

@@ -1,6 +1,8 @@
 import unittest
+from urllib.parse import parse_qs, urlsplit
+from unittest.mock import patch
 
-from northfork_checkout import CheckoutError, CheckoutSessions, retailer_handoff_url
+from northfork_checkout import CheckoutError, CheckoutSessions, NorthforkClient, retailer_handoff_url
 
 
 class FakeNorthfork:
@@ -30,6 +32,23 @@ class NorthforkCheckoutTests(unittest.TestCase):
         self.search = {'location': {'requested_zip': '63129'}, 'items': [
             {'id': 'xbyte-milk', 'name': 'Whole Milk', 'brand': 'Schnucks', 'size': '1 gal',
              'retailer': 'schnucks', 'source_provider': 'xbyte_foodspark', 'price': 3.99}]}
+
+
+    def test_store_discovery_requests_all_configured_retailers(self):
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self, limit): return b'{"data": []}'
+        class Opener:
+            def open(self, request, timeout):
+                self.request = request
+                return Response()
+        opener = Opener()
+        with patch('northfork_checkout.build_opener', return_value=opener):
+            NorthforkClient(api_key='test-token').stores('63129')
+        self.assertEqual(parse_qs(urlsplit(opener.request.full_url).query),
+                         {'providers': ['all'], 'offset': ['0'], 'limit': ['100'], 'zip': ['63129']})
 
     def test_complete_resolve_to_selected_retailer_handoff(self):
         stores = self.checkout.discover_stores('63129')

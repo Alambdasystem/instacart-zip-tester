@@ -7,7 +7,7 @@ Base URL: `https://alambda-grocery-api.onrender.com`
 - [Hosted Android contract](https://alambda-grocery-api.onrender.com/android-contract.md)
 - [Neadz migration handoff](https://github.com/Alambdasystem/instacart-zip-tester/blob/main/neadz-migration-0.10.1.md)
 
-This document describes the current wire contract. Version 0.12.0 makes checkout retailer-neutral; the 0.10.1 contract explicitly typed existing search variants, jobs, savings and operational responses; it does not rename their fields or change JSON number/boolean/string types. All POST bodies are UTF-8 JSON objects with `Content-Type: application/json`, between 1 and 10,000 bytes. JSON responses include `X-Request-ID`; retain it with the app build and HTTP status when diagnosing a failure, without logging credentials or full addresses.
+This document describes the current wire contract. Version 0.12.1 makes checkout retailer-neutral; the 0.10.1 contract explicitly typed existing search variants, jobs, savings and operational responses; it does not rename their fields or change JSON number/boolean/string types. All POST bodies are UTF-8 JSON objects with `Content-Type: application/json`, between 1 and 10,000 bytes. JSON responses include `X-Request-ID`; retain it with the app build and HTTP status when diagnosing a failure, without logging credentials or full addresses.
 
 ## Provider routing and provenance
 
